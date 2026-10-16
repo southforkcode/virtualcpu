@@ -2,15 +2,18 @@
 
 ## Registers
 
-- 8 16-bit accumulator and scratch registers: `r0`..`r7`
-  - `r0`..`r3` are accumulator/working registers
-  - `r4`..`r7` are scratch/storage registers
-- 4 16-bit internal, accessible registers
-  - `sp` : stack pointer
-  - `sb` : stack bottom pointer
-  - `dp` : data pointer
-  - `csr` : cpu status register
-- `pc` : 24-bit program counter
+| Register Class | Width | Name(s) | Description |
+| --- | --- | --- | --- |
+| Accumulator | 16 | `r0` .. `r3` | |
+| Scratch/Storage | 16 | `r4` .. `r7` | |
+| Internal | 16 | `sp` | stack pointer (offset) |
+| Internal | 16 | `sb` | stack base (offset) |
+| Internal | 16 | `dp` | data pointer (offset) |
+| Internal | 16 | `csr` | processor status register |
+| Internal | 16 | `pc` | program counter / instruction pointer |
+| Internal | 16 (1) | `cs` | code segment |
+| Internal | 16 (1) | `ds` | data segment |
+| Internal | 16 (1) | `ss` | stack segment |
 
 These registers are partitioned into register classes:
 
@@ -18,21 +21,29 @@ These registers are partitioned into register classes:
 |---|---|---|---|---|
 | Accumulator | `r0` | `r1` | `r2` | `r3` |
 | Scratch | `r4` | `r5` | `r6` | `r7` |
-| Internal | `sp` | `sb` | `dp` | `csr` |
-| Future | *tbd* | *tbd* | *tbd* | *tbd* |
+| Internal B0 | `sp` | `sb` | `dp` | `csr` |
+| Internal B1 | `ss` | `cs` | `ds` | *tbd* |
+
+Notes:
+
+1. only the rightmost 8-bits are used; future revisions may use the full 16-bits
 
 ## `csr` Flags
 
-`csr` register is a 16-bit field with status flags
+`csr` register is a 16-bit field with status flags:
 
- | Bit | Description |
- | --- | --- |
- | 0 | Zero flag |
- | 1 | Negative/Sign flag |
- | 2 | Carry flag |
- | 3 | Overflow flag |
- | 5 | Interrupt flag |
- | 6 | Exception flag |
+| 15 | 14 | 13 | 12 | 11 | 10 | 9 | 8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+| -- | -- | -- | -- | -- | -- | - | - | - | - | - | - | - | - | - | - |
+| \- | \- | \- | \- | \- | \- | \-| \-| \-| E | I | \-| V | C | N | Z | 
+
+| Bit | Flag | Description |
+| --- | ---- | ----------- |
+| 6 | E | Exception flag |
+| 5 | I | Interrupt enable/disable flag |
+| 3 | V | Overflow flag |
+| 2 | C | Carry flag |
+| 1 | N | Negative/sign flag |
+| 0 | Z | Zero flag |
 
 ## Stack
 
@@ -61,7 +72,8 @@ Conventionally, the stack grows downward, from a higher address to a lower addre
 | `BVS` | rel16 | branches if overflow set (`V=1`) | V | — |
 | `CLI` | implied | disables maskable interrupts | — | I |
 | `HALT` | implied | halts instruction execution | — | — |
-| `JMP` | abs24 | jumps to an absolute 24-bit address | — | — |
+| `JL` | abs32 | jumps to an absolute 24-bit address, sets `cs` | - | - |
+| `JS` | abs16 | jumps to an absolute 16-bit virtual address | — | — |
 | `MOV` | reg,reg | copies source to destination | —* | —* |
 | `MOV` | ~reg,reg | copies the bitwise complement of source to destination | — | N, Z |
 | `MOV` | imm16,reg | loads a 16-bit immediate into a register | — | — |
@@ -76,7 +88,9 @@ Conventionally, the stack grows downward, from a higher address to a lower addre
 | `SEI` | implied | enables maskable interrupts | — | I |
 | `SUB` | reg,reg | subtracts source from destination | — | N, Z, C, V |
 | `XOR` | reg,reg | bitwise XOR | — | N, Z |
+
 ## Instruction Formats
+
 - `0000 00 00` - nop
 - `0000 00 01` - halt
 - `0000 00 10` - cli : disable interrupts
@@ -84,13 +98,20 @@ Conventionally, the stack grows downward, from a higher address to a lower addre
 - `00 01 ss dd` - mov rs, rd
     - if rs == rd, see `$10`, `$15`, `$1A`, `$1F` extended instructions
 - `0100 cccc` - `Bxx` : conditional 16-bit relative branches
-- `0101 0000` - `JMP` : unconditional 24-bit absolute branch
+- `0101 0010` - `JS` : unconditional 16-bit absolute branch
+- `0101 0011` - `JL` : unconditional 32-bit absolute branch
+
 ### `$10` instructions
+
 `$10` requires a second 1-byte fetch for the extended opcode. The extended opcode is partitioned into 2 distinct groups based on the 7th bit of the second opcode:
+
 - `$10 0ooo ss dd` : alu/logic reg,reg operations
 - `$10 1mmm ss dd` : extended mov operations for internal registers 
+
 #### ALU/logic reg,reg operations
+
 `$10 0ooo ss dd`
+
 | `0ooo` | assembly syntax | operation |
 | ---- | --------- | ------ |
 | `0000` | `xor rs, rd` | `rd <- rs ^ rd` |
@@ -101,26 +122,31 @@ Conventionally, the stack grows downward, from a higher address to a lower addre
 | `0101` | `sbc rs, rd` | `rd <- rd - rs - ~c` |
 | `0110` | `add rs, rd` | `rd <- rs + rd` |
 | `0111` | `sub rs, rd` | `rd <- rd - rs` |
-#### Extended register move operations
+
+#### Extended register move operations (register bank transfer)
+
 This is a mov operation using the `mmm` mode selector for determing
 the register source and destination.
+
 `$10 1mmm ss dd`
+
 | `mmm` | description |
 | ----- | ----------- |
-| `000` | `rs` is an internal register, `rd` is a regular register |
+| `000` | `rs` is an internal (B0) register, `rd` is a regular register |
 | `001` | `rs` is a regular register, `rd` is an internal register |
 | `010` | `rs` is a scratch register, `rd` is a regular register |
 | `011` | `rs` is a regular register, `rd` is a scratch register |
-| `1--` | reserved |
-| Internal Register | Description |
-| --- | --- |
-| `00` | stack pointer |
-| `01` | stack bottom |
-| `10` | data pointer |
-| `11` | status register |
+| `100` | `rs` is an internal (B1) register, `rd` is a regular register |
+| `101` | `rs` is a regular register, `rd` is an internal (B1) register |
+| `110` | *reserved for future* |
+| `111` | *reserved for future* |
+
 ### `$15` instructions : load/store value to/from memory
+
 `$15` transfers an immediate value to a register, or transfers data between memory and a register.
+
 `$15 xdmm zrrr operand`
+
 | Field | Meaning |
 |---|---|
 | `x` | Reserved; must be zero; one currently raises *Illegal Instruction* exception |
@@ -128,15 +154,21 @@ the register source and destination.
 | `mm` | Operand mode |
 | `z` | Transfer size: `0` = 16 bits, `1` = 8 bits |
 | `rrr` | Register number, `r0–r7` |
+
 When the `z` is `1`:
+
 - register destination receives : `$00:<8-bit value>`
 - memory destination receives the right-most 8 bits of the source.
+
 `d` (direction) table:
+
 | `d` | Meaning |
 | --- | ------- |
 | `0` | register is destination, operand is value source |
 | `1` | register is source, operand is destination |
+
 `z`, `mm` (size and operand mode) table:
+
 | `z` | `mm` | Operand | Meaning |
 | --- |---|---|---|
 | `0` | `00` | `imm16` | Immediate 16-bit value |
@@ -147,9 +179,12 @@ When the `z` is `1`:
 | `1` | `10` | `[dp+off16]` | 8-bit value at memory at DP plus an offset |
 | `0` | `11` | `[sp-rel16]` | 16-bit value at memory at SP minus a displacement |
 | `1` | `11` | `[sp-rel16]` | 8-bit value at memory at SP minus a displacement |
+
 Notes:
+
 - If `d`=`1` and `mm`=`00`, an *Illegal Instruction* exception is raised.
 `rrr` (register) table:
+
 | `rrr` | register |
 | --- | --------- |
 | `000` | `r0` |
@@ -160,14 +195,19 @@ Notes:
 | `101` | `r5` |
 | `110` | `r6` |
 | `111` | `r7` |
+
 Instruction lengths:
+
 | Form | Total bytes |
 |---|---:|
 | Immediate 8-bit load | 3 |
 | Immediate 16-bit load | 4 |
 | Any memory load/store | 4 |
+
 ### `Bxx`: conditional branches
+
 `Bxx` operations require a 16-bit operand, *rel16*. *rel16* is a 16-bit signed offset value fetched as part of completing the fetching of the operation.
+
 | opcode | assembly syntax | operation |
 | --- | --- | --- |
 | `$40` | `BEQ rel16` | `IF Z=1, pc <- pc + rel16` |
@@ -186,8 +226,11 @@ Instruction lengths:
 | `$4D` | `BLE rel16` | `IF Z=1 OR N!=V, pc <- pc + rel16` |
 | `$4E` | `BRA rel16` | `pc <- pc + rel16` |
 | `$4F` | reserved | \- |
+
 ## Examples
+
 ### Example 1: Fibonacci
+
 ```
 ; Compute F(10) and store the 16-bit result at virtual address $2000.
 ;
