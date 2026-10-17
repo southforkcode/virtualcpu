@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Flat-image assembler/disassembler for explicitly selected ISA 0.4/0.5."""
+"""Flat-image assembler/disassembler for explicit 0.4/0.5/working modes."""
 from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from encoding import metadata, tables, available, ROOT
+from encoding import metadata, tables, available, ROOT, RUNTIME_LEVELS
 
 META = metadata()
 TABLES = tables()
@@ -71,7 +71,7 @@ def emit(identifier, fields=None, operand=0, revision='0.5'):
         data[f['byte']] = (data[f['byte']] & ~(mask << f['lsb'])) | val << f['lsb']
     for o in e['operands']:
         bits = 8*o['width_bytes']
-        low = -(1 << (bits-1)) if o['signed'] or e['semantic']=='move_immediate_zero_extend' else 0
+        low = -(1 << (bits-1)) if o['signed'] or e['semantic'] in ('move_immediate_zero_extend','test_immediate','alu_immediate') else 0
         high = (1 << (bits-1))-1 if o['signed'] else (1 << bits)-1
         require(low <= operand <= high, f'Operand out of range: {operand}')
         data[o['byte']:o['byte']+o['width_bytes']] = (operand & ((1 << bits)-1)).to_bytes(o['width_bytes'], 'little')
@@ -82,7 +82,7 @@ def emit(identifier, fields=None, operand=0, revision='0.5'):
 
 def encode(ins, pc, labels, revision='0.5'):
     op, args = ins.mnemonic, ins.args
-    aliases = {a['mnemonic']: a['expands_to'] for a in META['aliases'] if 'adjustment' not in a and not a.get('same_general_register_operands')}
+    aliases = {a['mnemonic']: a['expands_to'] for a in META['aliases'] if 'adjustment' not in a and not a.get('same_general_register_operands') and not a.get('same_b0_register_operands')}
     op = aliases.get(op, op)
     if op in ('INCP','DECP'):
         require(len(args)==1, 'Pointer alias needs one destination')
@@ -92,7 +92,43 @@ def encode(ins, pc, labels, revision='0.5'):
         return number(text[1:])
     def target(text):
         return labels[text] if text in labels else number(text)
-    if op in ('NOP','HALT','DI','EI','RET','IRET'):
+    family=op.split('.')[0]
+    if family in ('ADDI','SUBI','CMPI','ANDI','ORI','XORI'):
+        require(op in (family,family+'.B',family+'.W') and len(args)==2, 'Invalid immediate ALU operands/width')
+        return emit(f'{family.lower()}_{8 if op.endswith(".B") else 16}', {'destination':args[1]}, imm(args[0]), revision)
+    if op in ('GETC','SETC'):
+        require(len(args)==2, 'Expected control and register')
+        control,reg=args if op=='GETC' else args[::-1]
+        selector=META['control_indices'].get(control)
+        if selector is None: selector=number(control)
+        return emit(op.lower(), {'destination' if op=='GETC' else 'source':reg}, selector, revision)
+    if family=='MOVU':
+        require(op in ('MOVU','MOVU.B','MOVU.W') and len(args)==2, 'Invalid MOVU operands/width')
+        store=args[1].startswith('['); memory,reg=(args[1],args[0]) if store else args
+        match=re.fullmatch(r'\[(r[4-7])([+-].+)?\]',memory.replace(' ',''))
+        require(match is not None, 'MOVU requires a B1 base without segment override')
+        base,disp=match.groups(); displacement=number(disp) if disp else 0
+        return emit(f'movu_{"disp16" if displacement else "direct"}_{"store" if store else "load"}_{8 if op.endswith(".B") else 16}',
+                    {'source' if store else 'destination':reg,'base':base},displacement,revision)
+    if op.split('.')[0] in ('SHLI','SHRI','SARI','ROLI','RORI'):
+        mnemonic=op.split('.')[0]
+        require(op in (mnemonic,mnemonic+'.B',mnemonic+'.W'), 'Invalid shift/rotate width')
+        require(len(args)==2, 'Expected immediate count and B0 destination')
+        count=imm(args[0])
+        require(0<=count<=16, 'Shift/rotate count must be 0..16')
+        bits=8 if op.endswith('.B') else 16
+        return emit(f'{mnemonic.lower()}_{bits}', {'destination':args[1]}, count, revision)
+    if op in ('TST','TST.W','TST.B','TSTI','TSTI.W','TSTI.B'):
+        bits = 8 if op.endswith('.B') else 16
+        immediate = op.startswith('TSTI')
+        require(len(args)==(2 if immediate else 1), 'Wrong test operand count')
+        reg = args[-1]
+        require(reg in BANKS['B0'], 'Test requires a B0 register')
+        if not immediate and bits==16:
+            return emit('or', {'source':reg,'destination':reg}, revision=revision)
+        identifier = f'tsti_{bits}' if immediate else 'tst_8'
+        return emit(identifier, {'destination':reg}, imm(args[0]) if immediate else 0, revision)
+    if op in ('NOP','HALT','DI','EI','RET','RETF','IRET'):
         require(not args, 'Unexpected operand')
         return emit(op.lower(), revision=revision)
     if op in BRANCHES:
@@ -106,18 +142,25 @@ def encode(ins, pc, labels, revision='0.5'):
     if op in ('PUSH','POP','SHL','SHR','SAR'):
         require(len(args)==1, 'Expected one register')
         return emit(op.lower(), {'source' if op=='PUSH' else 'destination':args[0]}, revision=revision)
-    if op in ('CALL','JS','JL'):
+    if op in ('CALL','CALLF','JS','JL'):
         require(len(args)==1, 'Expected one target')
+        if op=='CALLF' and args[0] in labels:
+            require(0<=labels[args[0]]<=65535, 'Far-call label is outside segment zero')
         if op=='JS' and args[0] in BANKS['B1']:
             return emit('js_register', {'target':args[0]}, revision=revision)
         value = target(args[0])
-        require(0<=value<=(0xffffff if op=='JL' else 65535), 'Invalid target')
-        return emit({'CALL':'call','JS':'js_absolute','JL':'jl'}[op], operand=value, revision=revision)
+        require(0<=value<=(0xffffff if op in ('JL','CALLF') else 65535), 'Invalid target')
+        return emit({'CALL':'call','CALLF':'callf','JS':'js_absolute','JL':'jl'}[op], operand=value, revision=revision)
     if op in ('GETX','SETX'):
         require(len(args)==2, 'Expected context and register')
         context, reg = args if op=='GETX' else args[::-1]
-        if op=='SETX':
-            require(context in BANKS['context'][:17], 'Context metadata is read-only')
+        index=META['context_indices'].get(context)
+        if index is None: index=number(context)
+        if index>=0x20:
+            return emit(op.lower()+'_extended', {'destination' if op=='GETX' else 'source':reg},index,revision)
+        require(0<=index<21, 'Unknown context')
+        context=BANKS['context'][index]
+        if op=='SETX': require(index<17, 'Context metadata is read-only')
         return emit(op.lower(), {'context':context, 'destination' if op=='GETX' else 'source':reg}, revision=revision)
     if op in ('XOR','AND','OR','ADC','SBC','ADD','SUB','CMP'):
         require(len(args)==2, 'Expected two accumulators')
@@ -160,7 +203,7 @@ def encode(ins, pc, labels, revision='0.5'):
 
 
 def assemble(source, revision='0.5', origin=0x100):
-    require(revision in ('0.4','0.5'), 'Unsupported ISA revision')
+    require(revision in RUNTIME_LEVELS, 'Unsupported ISA revision')
     items=parse(source); labels={}; pc=origin; positions={}
     for i,item in enumerate(items):
         if isinstance(item,str):
@@ -169,8 +212,9 @@ def assemble(source, revision='0.5', origin=0x100):
             positions[i]=pc
             # Label operands have fixed lengths in the frozen ISA.
             if item.mnemonic in BRANCHES: length=3
-            elif item.mnemonic in ('CALL','JS','JL') and item.args[0] not in BANKS['B1']:
-                length={'CALL':4,'JS':3,'JL':5}[item.mnemonic]
+            elif item.mnemonic in ('CALL','CALLF','JS','JL'):
+                require(len(item.args)==1, 'Expected one target')
+                length=2 if item.mnemonic=='JS' and item.args[0] in BANKS['B1'] else {'CALL':4,'CALLF':5,'JS':3,'JL':5}[item.mnemonic]
             else: length=len(encode(item,pc,{},revision))
             pc+=length
     require(0<=origin<=65535 and pc<=65536, 'Image crosses code segment')
@@ -187,7 +231,8 @@ def decode(data, revision='0.5'):
     for i in range(e['length']):
         require(i<len(data), 'Truncated instruction')
         for c in e.get('encoding_checks',[]):
-            if c['byte']==i: require(data[i]&c['mask']==c['equals'], 'Reserved encoding bits')
+            if c['byte']==i:
+                require(data[i] in c['allowed_values'] if 'allowed_values' in c else data[i]&c['mask']==c['equals'], 'Reserved encoding bits/selector')
     values={f['name']:BANKS[f['bank']][(data[f['byte']]>>f['lsb'])&((1<<f['width'])-1)] for f in e['fields']}
     for o in e['operands']:
         values[o['name']]=int.from_bytes(data[o['byte']:o['byte']+o['width_bytes']], 'little', signed=o['signed'])
@@ -201,14 +246,26 @@ def disassemble(data, pc=0x100, revision='0.5'):
     elif name.startswith('addp_'): args=['#'+str(v['adjustment']),e['destination']]
     elif name=='adjsp': args=['#'+str(v['adjustment'])]
     elif name=='swi': args=['#'+str(v['service'])]
+    elif name in ('getc','setc','getx_extended','setx_extended'):
+        names=META['control_indices'] if name in ('getc','setc') else META['context_indices']
+        selector=next(n for n,i in names.items() if i==v['selector'])
+        args=[selector,v['destination']] if name.startswith('get') else [v['source'],selector]
+    elif e['semantic']=='alu_immediate':
+        op+='.'+('B' if e['operation_bits']==8 else 'W'); args=['#'+literal(v['immediate']),v['destination']]
     elif name=='getx': args=[v['context'],v['destination']]
     elif name=='setx': args=[v['source'],v['context']]
+    elif e['semantic']=='shift_rotate_immediate':
+        op+='.'+('B' if e['operation_bits']==8 else 'W')
+        args=['#'+str(v['count']),v['destination']]
+    elif e['semantic'] in ('test_register','test_immediate'):
+        op+='.'+('B' if e['operation_bits']==8 else 'W')
+        args=(['#'+literal(v['immediate'])] if e['semantic']=='test_immediate' else [])+[v['destination']]
     elif 'address' in e:
         a=e['address']; base=a['base']
         if base=='absolute': mem=literal(v['offset'])
         else:
             disp=v.get('displacement',v.get('offset',0)); b=v['base'] if base=='B1' else base
-            mem=(a['segment']+':' if base=='B1' else '')+b+(('+' if disp>=0 else '-')+literal(abs(disp)) if disp else '')
+            mem=(a['segment']+':' if base=='B1' and a['segment']!='uaccess' else '')+b+(('+' if disp>=0 else '-')+literal(abs(disp)) if disp else '')
         memory='['+mem+']'; args=[v['source'],memory] if 'source' in v else [memory,v['destination']]
         op+='.'+('B' if e['transfer_bits']==8 else 'W')
     elif name.startswith('mov_immediate'): op+='.'+('B' if e['transfer_bits']==8 else 'W'); args=['#'+literal(v['immediate']),v['destination']]
@@ -221,7 +278,7 @@ def disassemble(data, pc=0x100, revision='0.5'):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__); p.add_argument('action',choices=['assemble','disassemble']); p.add_argument('input',type=Path)
-    p.add_argument('--revision',required=True,choices=['0.4','0.5']); p.add_argument('--origin',type=lambda x:int(x,0),default=0x100); p.add_argument('-o','--output',type=Path)
+    p.add_argument('--revision',required=True,choices=list(RUNTIME_LEVELS)); p.add_argument('--origin',type=lambda x:int(x,0),default=0x100); p.add_argument('-o','--output',type=Path)
     a=p.parse_args()
     if a.action=='assemble':
         listing=assemble(a.input.read_text(),a.revision,a.origin)

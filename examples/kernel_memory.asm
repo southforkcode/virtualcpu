@@ -1,0 +1,34 @@
+; Memory handler at K CS=0:$1300, exact registered copy-fault recovery only.
+GETX xmem_origin,r0
+CMPI.W #$0003,r0
+BNE $1400
+GETX xmem_phase,r0
+CMPI.W #$0002,r0
+BNE $1400
+GETX xaccess,r0
+CMPI.W #$0002,r0
+BNE $1400
+GETX xwidth,r0
+CMPI.W #$0002,r0
+BNE $1400
+GETX xcs,r0
+CMPI.W #$0000,r0
+BNE $1400
+GETX xpc,r0
+CMPI.W #$150F,r0
+BNE $1400
+GETX xreason,r0
+CMPI.W #1,r0
+BCC $1400
+CMPI.W #8,r0
+BHI $1400
+MOV.W [$3008],r0
+ADDI.W #1,r0
+MOV.W r0,[$3008]
+MOV.W #0,r0
+SETC r0,uaccess_map
+SETX r0,xuaccess_map
+SETX r0,xuaccess_segment
+MOV.W #$1521,r0
+SETX r0,xpc
+IRET

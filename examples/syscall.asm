@@ -2,7 +2,7 @@
 ; Assemble/install caller at CS=0:$0100 and handler at CS=1:$0200 separately.
 ; Vector 6, physical $000018: 00 02 01 00 (handler 1:$0200).
 ; Valid saved-restorable stack limits required; no stack RAM is accessed.
-; See doc/ISA.md for the ABI and doc/ISA_Examples.md for exact byte listings.
+; See doc/ISA.md for the ABI and doc/ISA_EXAMPLES.md for exact byte listings.
 
 ; Caller (9 bytes), segment 0, origin $0100:
         MOV.B #7, r0
