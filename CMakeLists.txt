@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(virtualcpu LANGUAGES CXX)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_decode.py ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp
+    DEPENDS doc/ISA_ENCODING.md tools/generate_decode.py tools/encoding.py VERBATIM)
+add_library(virtualcpu src/cpu.cpp ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp)
+target_include_directories(virtualcpu PUBLIC src PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_options(virtualcpu PRIVATE -Wall -Wextra -Wpedantic)
+enable_testing()
+add_executable(cpu_conformance tests/cpu_conformance.cpp)
+target_link_libraries(cpu_conformance PRIVATE virtualcpu)
+add_test(NAME cpu_conformance COMMAND cpu_conformance)
+target_compile_definitions(cpu_conformance PRIVATE SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME toolchain COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_toolchain.py)
