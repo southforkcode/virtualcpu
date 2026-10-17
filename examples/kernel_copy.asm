@@ -17,7 +17,7 @@ copy_seven:
 MOV.W #$4028,r5
 copy_generation:
 MOV.W [r5],r0
-MOV.W r0,[r4+4]
+MOV.W r0,[r4+18]
 CALL $702A
 TST.W r0
 BNE copy_begin_error

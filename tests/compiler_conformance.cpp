@@ -1,5 +1,6 @@
 #include "compiler_images.hpp"
 #include "console_guest.hpp"
+#include "workloads/density/census.hpp"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -39,9 +40,9 @@ bool same_state(const VirtualCPU& c,const VirtualCPU& d) {
 VirtualCPU machine(const compiler_images::Program& program) {
     using namespace kernel_images;
     VirtualCPU c(0x80000,MachineProfile::ConsoleV1);
-    for(unsigned n=0;n<8;++n){unsigned t=n==0?0x100:n==5?console_irq:n==6?console_swi:0x1800;c.load(4*n,{uint8_t(t),uint8_t(t>>8),0,0});}
+    for(unsigned n=0;n<vcpu::exception_vector_count;++n){unsigned t=n==0?0x100:n==5?console_irq:n==6?console_swi:0x1800;c.load(4*n,{uint8_t(t),uint8_t(t>>8),0,0});}
     c.load(0x100,program.helper.empty()?compiler_images::boot:compiler_images::helper_boot);c.load(0x8000,compiler_images::kernel);
-    c.load(console_memory_origin,console_memory);c.load(load_context_origin,load_context);c.load(controls_origin,controls);
+    c.load(console_memory_origin,console_memory);c.load(load_context_origin,load_context); c.load(bootstrap_context_origin,bootstrap_context);c.load(controls_origin,controls);
     c.load(control_fault_origin,control_fault);c.load(0xa000,control_registry);c.load(0x1400,{1});
     c.load(0x10100,program.code);c.load(0x20100,console_peer);c.load(0x32000,program.data);
     c.load(0xb000,program.helper);console_guest::word(c,0x32100,32);console_guest::word(c,0x32102,0x2000);console_guest::word(c,0x32104,3);
@@ -58,10 +59,11 @@ struct Metrics {
 void histogram(std::ostream& out,const std::map<int,uint64_t>& values){bool first=true;out<<'{';for(auto [k,v]:values){if(!first)out<<',';first=false;out<<'"'<<k<<"\":"<<v;}out<<'}';}
 void run(const compiler_images::Program& p,std::ostream& report,bool first) {
     auto c=machine(p);auto replayed=c;auto header=c.replay_header();std::vector<std::string> events;
+    density::Census census;c.measure_traffic(true);
     std::map<unsigned,const compiler_images::Instruction*> user,kernel;
     for(auto& ins:p.instructions)user[ins.pc]=&ins;
     for(auto& ins:p.helper_instructions)kernel[ins.pc]=&ins;
-    Metrics m;bool injected=false,seen_b=false,seen_ss_irq=false;unsigned steps=0,guard_pc=0;
+    Metrics m;bool injected=false,seen_b=false,seen_ss_irq=false;unsigned steps=0,guard_pc=0,arithmetic_pc=0;
     while(steps++<2000000) {
         if(!p.input.empty() && !injected && word(c,0x402a)==2 && word(c,0x42000)>=3 && c.mode()==Mode::User && ps(c).controls[0]==8) {
             auto event=console_guest::input(c,std::vector<uint8_t>(p.input.begin(),p.input.end()));events.push_back(event);
@@ -71,8 +73,14 @@ void run(const compiler_images::Program& p,std::ostream& report,bool first) {
         bool compiled_user=c.mode()==Mode::User && ps(c).controls[0]==7 && c.registers().cs==1;
         const auto& map=compiled_user?user:kernel;auto found=map.find(c.registers().pc);
         const auto* ins=(compiled_user || c.mode()==Mode::Kernel && c.registers().cs==0) && found!=map.end()?found->second:nullptr;
-        auto time=ps(c).time;auto advanced=c.step();check(advanced==replayed.step() && same_state(c,replayed),p.name+": replay at boundary "+c.boundary());
+        auto time=ps(c).time;auto before=c.registers();auto depth=ps(c).frames.size();auto advanced=census.step(c);check(advanced==replayed.step() && same_state(c,replayed),p.name+": replay at boundary "+c.boundary());
         check(advanced,p.name+": halted/stalled unexpectedly");
+        if(ps(c).frames.size()>depth && ps(c).frames.back().words[17]==8) {
+            const auto& f=ps(c).frames.back();arithmetic_pc=before.pc;
+            unsigned physical=(compiled_user?0x10000:0)+before.pc;
+            check(p.arithmetic_tag && (compiled_user || p.kernel_fault && ins) && c.peek(physical)==0x1a && c.peek(physical+1)==p.arithmetic_tag,p.name+": exact compiler arithmetic fault site");
+            check(std::equal(before.r.begin(),before.r.end(),f.words.begin()) && f.words[8]==before.pc && f.words[10]==before.flags && f.memory==std::array<uint16_t,11>{} && ps(c).time==time,p.name+": arithmetic preserves all input state without retirement");
+        }
         if(ps(c).time!=time) {
             ++m.retired;
             if(ins) {
@@ -93,7 +101,10 @@ void run(const compiler_images::Program& p,std::ostream& report,bool first) {
     check(steps<2000000,p.name+": execution limit");
     uint64_t counted=0;for(auto [pc,count]:m.instruction_pcs)counted+=count;
     check(counted==m.compiled,p.name+": per-PC retirement accounting");
-    if(p.guard) {
+    if(p.arithmetic_tag) {
+        const auto& f=ps(c).frames.back();
+        check(c.registers().pc==0x1401 && ps(c).frames.size()==1 && f.words[17]==8 && f.origin==(p.kernel_fault?Mode::Kernel:Mode::User) && arithmetic_pc && f.words[8]==arithmetic_pc && f.words[0]==p.divisor && f.words[1]==p.dividend && word(c,0x32f04)==0,p.name+": arithmetic propagates cause eight without pointer status remapping");
+    } else if(p.guard) {
         check(c.registers().pc==0x1401 && word(c,0x32f04)==p.guard && ps(c).frames.size()==1 && ps(c).frames.back().words[17]==6 && ps(c).frames.back().words[20]==255 && guard_pc,p.name+": exact compiler pointer failure trap");
         check(c.peek(0x30000)==0xa7 && c.peek(0x3ffff)==0x5c,p.name+": failed checked address cannot wrap into another byte");
     } else {
@@ -107,18 +118,18 @@ void run(const compiler_images::Program& p,std::ostream& report,bool first) {
     check(std::string(ps(c).console_tx.begin(),ps(c).console_tx.end())==p.output && ps(c).console_rx.empty(),p.name+": terminal output and RX consumption");
     if(!p.input.empty())check(injected && seen_b && word(c,0x300a)==1 && word(c,0x300c)==1,p.name+": generated terminal blocks and wakes alongside peer");
     if(p.preempt_ss)check(seen_ss_irq,p.name+": saved DS=SS window resumes correctly after preemption");
-    if(p.preempt)check(seen_b && word(c,0x3006)>=2 && word(c,0x42000)>0,p.name+": compiler binary survives timer preemption");
+    if(p.preempt)check(seen_b && word(c,0x3006)>=2 && word(c,0x42000)>0,p.name+": compiler binary survives timer preemption (selections="+std::to_string(word(c,0x3006))+", peer="+std::to_string(word(c,0x42000))+")");
     bool same=true;for(unsigned a=0;a<0x80000;++a)same&=c.peek(a)==replayed.peek(a);check(same,p.name+": final RAM replay");
     if(!first)report<<",\n";
     report<<"{\"name\":\""<<p.name<<"\",\"variant\":\""<<p.variant<<"\",\"static_bytes\":"<<p.code.size()+p.helper.size()<<",\"data_bytes\":"<<p.data.size()
       <<",\"retired_instructions\":"<<m.compiled<<",\"system_retired_instructions\":"<<m.retired<<",\"boundaries\":"<<c.boundary()
       <<",\"bank_moves\":"<<m.bank_moves<<",\"spills\":"<<m.spills<<",\"reloads\":"<<m.reloads<<",\"maximum_user_stack_bytes\":"<<m.stack
       <<",\"maximum_helper_stack_bytes\":"<<m.kernel_stack<<",\"address_alu\":"<<m.address_alu<<",\"checked_address_instructions\":"<<m.guards
-      <<",\"ss_window_preempted\":"<<(seen_ss_irq?"true":"false")<<",\"guard_trap_pc\":"<<guard_pc<<",\"exit_csr\":"<<ps(c).frames.back().words[10]<<",\"peer_progress\":"<<word(c,0x42000)<<",\"schedule_selections\":"<<word(c,0x3006)
+      <<",\"ss_window_preempted\":"<<(seen_ss_irq?"true":"false")<<",\"guard_trap_pc\":"<<guard_pc<<",\"arithmetic_fault_pc\":"<<arithmetic_pc<<",\"arithmetic_fault_tag\":"<<p.arithmetic_tag<<",\"exit_csr\":"<<ps(c).frames.back().words[10]<<",\"peer_progress\":"<<word(c,0x42000)<<",\"schedule_selections\":"<<word(c,0x3006)
       <<",\"dynamic_sp_offsets\":";histogram(report,m.sp_offsets);report<<",\"dynamic_b1_offsets\":";histogram(report,m.b1_offsets);report<<",\"dynamic_branch_distances\":";histogram(report,m.branch_distances);
     report<<",\"dynamic_instruction_pcs\":";histogram(report,m.instruction_pcs);
     report<<",\"instruction_families\":{";bool f=true;for(auto& [family,count]:m.families){if(!f)report<<',';f=false;report<<'"'<<family<<"\":"<<count;}report<<"},\"replay_header\":"<<header<<",\"events\":[";
-    for(size_t i=0;i<events.size();++i){if(i)report<<',';report<<events[i];}report<<"]}";
+    for(size_t i=0;i<events.size();++i){if(i)report<<',';report<<events[i];}report<<"],\"system_census\":";census.json(report);report<<'}';
     std::cout<<p.name<<": "<<m.compiled<<" compiled instructions, "<<c.boundary()<<" B, stack="<<m.stack<<'\n';
 }
 }

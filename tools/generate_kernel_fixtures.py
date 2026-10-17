@@ -5,7 +5,7 @@ from isa import assemble, parse
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = {'boot': 0x100, 'irq': 0x1000, 'swi': 0x1200, 'memory': 0x1300,
-          'copy': 0x1500, 'load_context': 0x1600, 'user': 0x100,
+          'copy': 0x1500, 'load_context': 0x1600, 'bootstrap_context': 0x1700, 'user': 0x100,
           'console_probe': 0x1c00, 'console_memory': 0x1300, 'console': 0x8000, 'console_boot': 0x100, 'console_user': 0x100, 'console_peer': 0x100,
           'control_fault': 0x1800, 'control_probe': 0x1c00, 'controls': 0x7000}
 
@@ -33,14 +33,16 @@ def control_registry(rows, symbols):
             continue
         flags = 0x10  # A missing instruction byte at this exact registered PC.
         instruction=parse(source)[0]
-        if instruction.mnemonic.split('.')[0] in ('CALL','RET','JS','BRA','BEQ','BNE','BCC','BCS','BHI','BLS','BGE','BLT','BGT','BLE','BMI','BPL','BVS','BVC'):
+        if instruction.mnemonic.split('.')[0] in ('CALL','CALLR','RET','JS','BRA','BEQ','BNE','BCC','BCS','BHI','BLS','BGE','BLT','BGT','BLE','BMI','BPL','BVS','BVC'):
             flags |= 0x1000  # Only a registered operation target can recover.
         if '[' in source:
             flags |= 0x20 | (0x100 if instruction.args[0].startswith('[') else 0x200)
+        if instruction.mnemonic in ('LDC','STC'):
+            flags |= 0x40 | 0x100  # Invalid image/header and READ preflight.
         if source.startswith('SETC '): flags |= 0x40
         if pc in (symbols['commit_entry_configure'], symbols['commit_prepare_user_return']): flags |= 0x8a0
         if pc == symbols['commit_prepare_user_return']: flags |= 0x400
-        for name in ('descriptor_install', 'descriptor_remove', 'map_publish', 'map_invalidate',
+        for name in ('descriptor_install', 'descriptor_remove', 'descriptor_readback', 'map_publish', 'map_invalidate',
                      'entry_configure', 'backing_query', 'uaccess_begin', 'uaccess_end',
                      'prepare_user_return', 'map_acquire', 'map_release', 'uaccess_clear'):
             if symbols['committed_'+name] <= pc < symbols['end_'+name]: flags |= 1

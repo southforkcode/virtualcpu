@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_decode.py ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp
     DEPENDS doc/ISA_ENCODING.md tools/generate_decode.py tools/encoding.py VERBATIM)
-add_library(virtualcpu src/cpu.cpp src/protected.cpp src/replay.cpp ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp)
+add_library(virtualcpu src/cpu.cpp src/protected.cpp src/replay.cpp src/memory_transaction.hpp ${CMAKE_CURRENT_BINARY_DIR}/decode_table.hpp)
 target_include_directories(virtualcpu PUBLIC src PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(virtualcpu PRIVATE -Wall -Wextra -Wpedantic)
 enable_testing()
@@ -38,6 +38,42 @@ add_dependencies(protected_conformance kernel_images)
 target_include_directories(protected_conformance PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(protected_conformance PRIVATE virtualcpu)
 add_test(NAME protected_conformance COMMAND protected_conformance)
+add_executable(memory_transaction tests/memory_transaction.cpp)
+target_link_libraries(memory_transaction PRIVATE virtualcpu)
+add_test(NAME memory_transaction COMMAND memory_transaction)
+add_test(NAME bulk_design COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bulk_design.py)
+add_executable(descriptor_transfers tests/descriptor_transfers.cpp)
+target_link_libraries(descriptor_transfers PRIVATE virtualcpu)
+add_test(NAME descriptor_transfers COMMAND descriptor_transfers)
+add_executable(context_transfers tests/context_transfers.cpp)
+target_link_libraries(context_transfers PRIVATE virtualcpu)
+add_test(NAME context_transfers COMMAND context_transfers)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/bulk/bulk_images.hpp ${CMAKE_CURRENT_BINARY_DIR}/bulk/bulk_images.json
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_bulk_fixtures.py ${CMAKE_CURRENT_BINARY_DIR}/bulk/bulk_images.hpp
+    DEPENDS examples/bulk_boot.asm examples/bulk_context.asm examples/bulk_recover.asm examples/bulk_load.asm
+            examples/bulk_guest.hpp examples/bulk.cpp tests/bulk_integration.cpp tools/generate_bulk_fixtures.py
+            tools/generate_kernel_fixtures.py tools/isa.py tools/encoding.py doc/ISA_ENCODING.md
+            src/cpu.cpp src/cpu.hpp src/protected.cpp src/replay.cpp src/memory_transaction.hpp CMakeLists.txt VERBATIM)
+add_custom_target(bulk_images DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/bulk/bulk_images.hpp ${CMAKE_CURRENT_BINARY_DIR}/bulk/bulk_images.json)
+add_executable(bulk_demo examples/bulk.cpp)
+add_dependencies(bulk_demo bulk_images)
+target_include_directories(bulk_demo PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/bulk)
+target_link_libraries(bulk_demo PRIVATE virtualcpu)
+add_test(NAME bulk_demo COMMAND bulk_demo)
+add_test(NAME bulk_console_demo COMMAND bulk_demo console-v1)
+add_executable(bulk_integration tests/bulk_integration.cpp)
+add_dependencies(bulk_integration bulk_images)
+target_include_directories(bulk_integration PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/bulk examples)
+target_link_libraries(bulk_integration PRIVATE virtualcpu)
+add_test(NAME bulk_integration COMMAND bulk_integration ${CMAKE_CURRENT_BINARY_DIR}/bulk/execution.json)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/arithmetic_fixture.hpp
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_arithmetic_fixture.py ${CMAKE_CURRENT_BINARY_DIR}/arithmetic_fixture.hpp
+    DEPENDS examples/arithmetic.asm examples/arithmetic_fault.asm tools/generate_arithmetic_fixture.py tools/isa.py tools/encoding.py doc/ISA_ENCODING.md VERBATIM)
+add_executable(integer_arithmetic tests/integer_arithmetic.cpp ${CMAKE_CURRENT_BINARY_DIR}/arithmetic_fixture.hpp)
+target_include_directories(integer_arithmetic PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(integer_arithmetic PRIVATE virtualcpu)
+add_test(NAME integer_arithmetic COMMAND integer_arithmetic)
+add_test(NAME integer_arithmetic_toolchain COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_integer_arithmetic.py)
 add_executable(kernel_demo examples/kernel.cpp)
 add_dependencies(kernel_demo kernel_images)
 target_include_directories(kernel_demo PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
@@ -61,7 +97,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/compiler/compiler_images.h
     DEPENDS ${COMPILER_CORPUS} ${KERNEL_IMAGES} examples/workloads/corpus.json tools/smallc.py tools/isa.py tools/encoding.py
             tools/generate_compiler_fixtures.py tools/generate_kernel_fixtures.py tools/measure_workloads.py
             tests/compiler_conformance.cpp tests/test_compiler.py tools/evaluate_pointer_arithmetic.py tests/test_pointer_evaluation.py
-            examples/console_guest.hpp CMakeLists.txt src/cpu.cpp src/cpu.hpp src/protected.cpp src/replay.cpp doc/ISA_ENCODING.md VERBATIM)
+            examples/console_guest.hpp examples/workloads/density/census.hpp CMakeLists.txt src/cpu.cpp src/cpu.hpp src/memory_transaction.hpp src/protected.cpp src/replay.cpp doc/ISA_ENCODING.md VERBATIM)
 add_custom_target(compiler_images DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/compiler/compiler_images.hpp ${CMAKE_CURRENT_BINARY_DIR}/compiler/compiler_images.json)
 add_executable(compiler_conformance tests/compiler_conformance.cpp)
 add_dependencies(compiler_conformance kernel_images compiler_images)
@@ -79,3 +115,28 @@ add_test(NAME pointer_evaluation COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_S
     --build ${CMAKE_CURRENT_BINARY_DIR}
     --output ${CMAKE_CURRENT_BINARY_DIR}/compiler/pointer-evaluation.json)
 set_tests_properties(pointer_evaluation PROPERTIES FIXTURES_REQUIRED compiler_execution)
+file(GLOB DENSITY_SOURCES CONFIGURE_DEPENDS examples/workloads/density/*.asm)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/density/density_images.hpp ${CMAKE_CURRENT_BINARY_DIR}/density/density_images.json
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_density_fixtures.py ${CMAKE_CURRENT_BINARY_DIR}/density/density_images.hpp
+    DEPENDS ${DENSITY_SOURCES} examples/workloads/density/adoption.json tools/generate_density_fixtures.py
+            ${KERNEL_IMAGES} examples/workloads/density/census.hpp tests/density_census.cpp examples/console_guest.hpp
+            src/cpu.cpp src/cpu.hpp src/memory_transaction.hpp src/protected.cpp src/replay.cpp CMakeLists.txt
+            tools/generate_kernel_fixtures.py tools/isa.py tools/encoding.py doc/ISA_ENCODING.md VERBATIM)
+add_executable(density_census tests/density_census.cpp ${CMAKE_CURRENT_BINARY_DIR}/density/density_images.hpp)
+add_dependencies(density_census kernel_images)
+target_include_directories(density_census PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/density examples)
+target_link_libraries(density_census PRIVATE virtualcpu)
+add_test(NAME density_census COMMAND density_census ${CMAKE_CURRENT_BINARY_DIR}/density/execution.json)
+set_tests_properties(density_census PROPERTIES FIXTURES_SETUP density_execution)
+add_test(NAME density_measurements COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_density_measurements.py --build ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(density_measurements PROPERTIES FIXTURES_REQUIRED "compiler_execution;density_execution")
+add_test(NAME density_candidates COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_density_candidates.py --build ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(density_candidates PROPERTIES FIXTURES_REQUIRED "compiler_execution;density_execution")
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/density_example.hpp
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_density_example.py ${CMAKE_CURRENT_BINARY_DIR}/density_example.hpp
+    DEPENDS examples/density.asm tools/generate_density_example.py tools/isa.py tools/encoding.py doc/ISA_ENCODING.md VERBATIM)
+add_executable(density_instructions tests/density_instructions.cpp ${CMAKE_CURRENT_BINARY_DIR}/density_example.hpp)
+target_include_directories(density_instructions PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(density_instructions PRIVATE virtualcpu)
+add_test(NAME density_instructions COMMAND density_instructions)
+add_test(NAME density_instruction_toolchain COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_density_instructions.py)

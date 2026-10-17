@@ -85,7 +85,7 @@ class Toolchain(unittest.TestCase):
             lambda m: m['tables']['primary']['entries'][0].update(match={'mask':0,'value':1}),
             lambda m: m['tables']['ext27']['entries'][0]['fields'][0].update(byte=5),
             lambda m: m['tables']['ext27']['entries'][0]['encoding_checks'][0].update(byte=5),
-            lambda m: m['tables']['ext1f']['entries'][-1]['encoding_checks'][0].update(allowed_values=[256]),
+            lambda m: next(e for e in m['tables']['ext1f']['entries'] if e['id']=='setc')['encoding_checks'][0].update(allowed_values=[256]),
         ):
             data=copy.deepcopy(metadata()); mutate(data)
             with self.assertRaises(ValueError): validate(data)
@@ -240,6 +240,7 @@ class Toolchain(unittest.TestCase):
                 'backing_query','uaccess_begin','uaccess_end','prepare_user_return','map_acquire','map_release','uaccess_clear','initialize')
         for index,name in enumerate(public): self.assertEqual(symbols[name],0x7000+7*index)
         self.assertEqual(symbols['control_abort'],0x705b)
+        self.assertEqual(symbols['descriptor_readback'],0x705e)
         self.assertLess(rows[-1][0]+len(rows[-1][1]),0xa000)
         sites,data=control_registry(rows,symbols)
         self.assertEqual(int.from_bytes(data[:2],'little'),len(sites))

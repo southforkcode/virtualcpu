@@ -20,8 +20,8 @@ def kernel_report():
         assembled=assemble(source,origin=origin);code=b''.join(b for _,b,_ in assembled)
         rows.append({'name':name,'origin':origin,'static_bytes':len(code),'instructions':len(assembled),
                      'binary_sha256':hashlib.sha256(code).hexdigest(),'source_sha256':hashlib.sha256(source.encode()).hexdigest()})
-    groups={'minimal_demo':('boot','irq','swi','memory','copy','load_context','controls','control_fault','user'),
-            'console_demo':('console_boot','console','console_memory','load_context','controls','control_fault','console_user','console_peer')}
+    groups={'minimal_demo':('boot','irq','swi','memory','copy','load_context','bootstrap_context','controls','control_fault','user'),
+            'console_demo':('console_boot','console','console_memory','load_context','bootstrap_context','controls','control_fault','console_user','console_peer')}
     return {'images':rows,
             'distinct_image_totals':{name:{key:sum(r[key] for r in rows if r['name'] in group) for key in ('static_bytes','instructions')} for name,group in groups.items()},
             'scope':'Each assembled image counted once per group; excludes vectors, registry/data, duplicated user loads and compiler-specific boot/kernel variants.'}
@@ -49,8 +49,10 @@ def build_report(build,execution):
     if {r['name'] for r in run['programs']}!=require_names:raise ValueError('Execution/artifact corpus mismatch')
     rows=[]
     for raw in run['programs']:
-        a=artifacts[raw['name']];row=dict(raw)
-        row.update(source=a['source'],source_sha256=a['source_sha256'],binary_sha256=a['binary_sha256'],assembly_sha256=a['assembly_sha256'],data_sha256=a['data_sha256'],expected_result=a['result'],expected_guard=a.get('guard',0),frames=a['frames'],entrypoints=a['entrypoints'])
+        # Whole-system per-PC detail belongs to the density census sidecar, not
+        # the ordinary compiler report (which already has user-code metrics).
+        a=artifacts[raw['name']];row={k:v for k,v in raw.items() if k!='system_census'}
+        row.update(source=a['source'],source_sha256=a['source_sha256'],binary_sha256=a['binary_sha256'],assembly_sha256=a['assembly_sha256'],data_sha256=a['data_sha256'],expected_result=a['result'],expected_guard=a.get('guard',0),expected_arithmetic_fault=a.get('arithmetic_fault'),frames=a['frames'],entrypoints=a['entrypoints'])
         instructions=a['instructions']+a.get('helper_artifact',{}).get('instructions',[])
         if a.get('helper_artifact'):
             helper=a['helper_artifact'];row.update(helper_binary_sha256=hashlib.sha256(bytes(helper['code'])).hexdigest(),helper_assembly_sha256=hashlib.sha256(helper['assembly'].encode()).hexdigest(),helper_frames=helper['frames'],helper_entrypoints=helper['entrypoints'],helper_source_sha256=helper['source_sha256'])
@@ -66,7 +68,7 @@ def build_report(build,execution):
             'sp_uimm8':sum(1 for i in instructions if i.get('addressing')=='sp' and i['bytes']==4 and 0<=i['displacement']<=255),
         }
         rows.append(row)
-    compiled=[r for r in rows if r['variant']=='compiled'];successful=[r for r in compiled if not r['expected_guard']]
+    compiled=[r for r in rows if r['variant']=='compiled'];successful=[r for r in compiled if not r['expected_guard'] and not r['expected_arithmetic_fault']]
     metrics=('static_bytes','retired_instructions','boundaries','bank_moves','spills','reloads','maximum_user_stack_bytes','address_alu','checked_address_instructions')
     aggregates={name:{'count':len(group),'sum':{k:sum(r[k] for r in group) for k in metrics if not k.startswith('maximum_')},'max_user_stack_bytes':max(r['maximum_user_stack_bytes'] for r in group),'max_helper_stack_bytes':max(r['maximum_helper_stack_bytes'] for r in group),'median':{k:statistics.median(r[k] for r in group) for k in metrics}} for name,group in [('all_compiled',compiled),('successful_compiled',successful)]}
     aggregate_distributions={}
@@ -88,7 +90,7 @@ def build_report(build,execution):
     config={}
     for name in ('CMAKE_BUILD_TYPE','CMAKE_CXX_COMPILER','CMAKE_CXX_FLAGS','CMAKE_CXX_FLAGS_RELEASE','CMAKE_EXE_LINKER_FLAGS'):
         lines=[line for line in cache.splitlines() if line.startswith(name+':')];config[name]=lines[0].split('=',1)[1] if lines else None
-    provenance={k:v for k,v in manifest.items() if k!='artifacts'};provenance['host_build']=config
+    provenance={k:v for k,v in manifest.items() if k not in ('artifacts','kernel_artifacts')};provenance['host_build']=config
     return {'schema_version':1,'kernel':kernel_report(),'provenance':provenance,'execution_checks':run['checks'],'programs':rows,'aggregates':aggregates,'encoding_distributions':aggregate_distributions,'symbolic_compact_savings_bytes':{k:sum(r['symbolic_compact_savings_bytes'][k] for r in compiled) for k in ('b1_simm6','branch_rel8','sp_uimm8')},'hand_reference_comparisons':references,
             'interpretation':{'instruction_counts':'Retired user code for map 7 plus compiled K helper only, including compiler wrappers/guards; system retired and B include kernel/peer/IRQ work. IRQ entry is a B transition, not a retired instruction.',
                               'addressing_histograms':'Only memory instructions count as B1 accesses; register transfers are counted separately.',
@@ -100,7 +102,7 @@ def build_report(build,execution):
 def markdown(report):
     lines=['| Program | Code bytes | Retired compiled | Total B | B0/B1 moves | Spills/reloads | Max U stack | Address B0 ALU | Check instructions |','|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for r in report['programs']:
-        name=r['name']+(' (guard '+str(r['expected_guard'])+')' if r['expected_guard'] else '')
+        name=r['name']+(' (guard '+str(r['expected_guard'])+')' if r['expected_guard'] else ' (arithmetic fault)' if r['expected_arithmetic_fault'] else '')
         lines.append(f'| {name} | {r["static_bytes"]} | {r["retired_instructions"]} | {r["boundaries"]} | {r["bank_moves"]} | {r["spills"]}/{r["reloads"]} | {r["maximum_user_stack_bytes"]} | {r["address_alu"]} | {r["checked_address_instructions"]} |')
     lines+=['','| Matched fixed-input reference | Compiled / hand bytes | Compiled / hand retired | Static ratio | Retired ratio | B change |','|---|---:|---:|---:|---:|---:|']
     for p in report['hand_reference_comparisons']['pairs']:lines.append(f'| {p["name"]} | {p["compiled_bytes"]}/{p["hand_bytes"]} | {p["compiled_retired"]}/{p["hand_retired"]} | {p["static_ratio"]:.2f}× | {p["retired_ratio"]:.2f}× | +{p["boundary_delta"]} |')

@@ -13,12 +13,12 @@ inline unsigned word(const vcpu::VirtualCPU& c,unsigned a) {
 inline vcpu::VirtualCPU machine(unsigned count=32,unsigned pointer=0x2000,unsigned segment=3,unsigned peer=0,unsigned hole=0,bool probe=false) {
     using namespace kernel_images;
     vcpu::VirtualCPU c(0x80000,vcpu::MachineProfile::ConsoleV1);
-    for (unsigned n=0;n<8;++n) {
+    for (unsigned n=0;n<vcpu::exception_vector_count;++n) {
         unsigned target=n==0?0x100:n==5?console_irq:n==6?console_swi:0x1800;
         c.load(4*n,{uint8_t(target),uint8_t(target>>8),0,0});
     }
     c.load(console_boot_origin,console_boot); c.load(console_origin,console);
-    c.load(console_memory_origin,console_memory); c.load(load_context_origin,load_context);
+    c.load(console_memory_origin,console_memory); c.load(load_context_origin,load_context); c.load(bootstrap_context_origin,bootstrap_context);
     c.load(controls_origin,controls); c.load(control_fault_origin,control_fault); c.load(0xa000,control_registry);
     c.load(0x1400,{1}); c.load(0x10100,console_user); c.load(0x20100,console_peer);
     word(c,0x32100,count); word(c,0x32102,pointer); word(c,0x32104,segment); word(c,0x42010,peer);

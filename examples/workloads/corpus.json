@@ -210,6 +210,150 @@
       "result": 2048,
       "preempt": true,
       "preempt_ss": true
+    },
+    {
+      "name": "arithmetic_words",
+      "result": 9356,
+      "source": "arithmetic_words.c"
+    },
+    {
+      "name": "arithmetic_signed",
+      "result": 1,
+      "source": "arithmetic_signed.c"
+    },
+    {
+      "name": "arithmetic_promotions",
+      "result": 1,
+      "source": "arithmetic_promotions.c"
+    },
+    {
+      "name": "arithmetic_calls",
+      "result": 1,
+      "source": "arithmetic_calls.c"
+    },
+    {
+      "name": "arithmetic_constants",
+      "result": 1,
+      "source": "arithmetic_constants.c"
+    },
+    {
+      "name": "arithmetic_decimal",
+      "result": 65535,
+      "memory": {
+        "8197": [
+          54,
+          53,
+          53,
+          51,
+          53
+        ]
+      },
+      "source": "arithmetic_decimal.c"
+    },
+    {
+      "name": "arithmetic_preempt",
+      "result": 46174,
+      "preempt": true,
+      "source": "arithmetic_preempt.c"
+    },
+    {
+      "name": "arithmetic_power2",
+      "result": 1,
+      "source": "arithmetic_power2.c"
+    },
+    {
+      "name": "arithmetic_struct_scale",
+      "result": 63,
+      "source": "arithmetic_struct_scale.c"
+    },
+    {
+      "name": "fail_divu_zero",
+      "result": 0,
+      "arithmetic_fault": {
+        "operation": "divu",
+        "dividend": 100,
+        "divisor": 0
+      },
+      "unchanged_data": true,
+      "source": "fail_divu_zero.c"
+    },
+    {
+      "name": "fail_divs_zero",
+      "result": 0,
+      "arithmetic_fault": {
+        "operation": "divs",
+        "dividend": 65436,
+        "divisor": 0
+      },
+      "unchanged_data": true,
+      "source": "fail_divs_zero.c"
+    },
+    {
+      "name": "fail_modu_zero",
+      "result": 0,
+      "arithmetic_fault": {
+        "operation": "modu",
+        "dividend": 100,
+        "divisor": 0
+      },
+      "unchanged_data": true,
+      "source": "fail_modu_zero.c"
+    },
+    {
+      "name": "fail_mods_zero",
+      "result": 0,
+      "arithmetic_fault": {
+        "operation": "mods",
+        "dividend": 65436,
+        "divisor": 0
+      },
+      "unchanged_data": true,
+      "source": "fail_mods_zero.c"
+    },
+    {
+      "name": "fail_divs_overflow",
+      "result": 0,
+      "arithmetic_fault": {
+        "operation": "divs",
+        "dividend": 32768,
+        "divisor": 65535
+      },
+      "unchanged_data": true,
+      "source": "fail_divs_overflow.c"
+    },
+    {
+      "name": "fail_mods_overflow",
+      "result": 0,
+      "arithmetic_fault": {
+        "operation": "mods",
+        "dividend": 32768,
+        "divisor": 65535
+      },
+      "unchanged_data": true,
+      "source": "fail_mods_overflow.c"
+    },
+    {
+      "name": "fail_divu_preempt",
+      "source": "fail_divu_preempt.c",
+      "result": 0,
+      "preempt": true,
+      "arithmetic_fault": {
+        "operation": "divu",
+        "dividend": 57600,
+        "divisor": 0
+      }
+    },
+    {
+      "name": "kernel_arithmetic_fault",
+      "source": "kernel_caller.c",
+      "helper": "kernel_arithmetic_helper.c",
+      "result": 0,
+      "kernel_fault": true,
+      "arithmetic_fault": {
+        "operation": "divs",
+        "dividend": 32768,
+        "divisor": 65535
+      }
     }
   ]
 }

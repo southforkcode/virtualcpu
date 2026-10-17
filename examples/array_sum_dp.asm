@@ -9,7 +9,7 @@ loop:
 MOV.W [dp+0],r2
 ADD r2,r0
 ADDP #2,dp
-SUBI.W #1,r1
+DEC.W r1
 BNE loop
 done:
 MOV.W r0,[$2100]

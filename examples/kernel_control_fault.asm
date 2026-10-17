@@ -172,7 +172,57 @@ MOV.W #$705B,r0
 SETX r0,xpc
 IRET
 unowned_fault:
+; Exact LDX recovery: candidate never changed the lower U-origin frame.
+GETX xpc,r0
+CMPI.W #$1600,r0
+BEQ context_load_fault
 GETX xcause,r0
 CMPI.W #2,r0
 BNE $1400
 JS $1300
+context_load_fault:
+GETX xorigin_mode,r0
+CMPI.W #1,r0
+BNE $1400
+GETX xcs,r0
+TST.W r0
+BNE $1400
+GETX xprior_depth,r0
+CMPI.W #1,r0
+BNE $1400
+GETX xcsr,r0
+TSTI.W #$20,r0
+BNE $1400
+MOV.W [$3032],r0
+CMPI.W #1,r0
+BNE $1400
+GETX xcause,r0
+CMPI.W #4,r0
+BEQ context_load_recover
+CMPI.W #3,r0
+BEQ context_load_recover
+CMPI.W #2,r0
+BNE $1400
+GETX xmem_phase,r0
+CMPI.W #5,r0
+BEQ context_load_recover
+CMPI.W #6,r0
+BEQ context_load_recover
+; Source preflight is also recoverable; missing instruction bytes are fatal.
+CMPI.W #2,r0
+BNE $1400
+GETX xmem_origin,r0
+CMPI.W #2,r0
+BNE $1400
+GETX xaccess,r0
+CMPI.W #2,r0
+BNE $1400
+GETX xwidth,r0
+CMPI.W #2,r0
+BNE $1400
+context_load_recover:
+MOV.W #1,r0
+SETX r0,xr0
+MOV.W #$1606,r0
+SETX r0,xpc
+IRET

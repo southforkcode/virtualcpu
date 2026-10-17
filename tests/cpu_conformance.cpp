@@ -28,7 +28,7 @@ void irq(VirtualCPU& c) {
 }
 VirtualCPU machine() {
     VirtualCPU c(0x40000);
-    for (unsigned i=0;i<=7;++i) vector_to(c,i,i?0x300:0x100);
+    for (unsigned i=0;i<vcpu::exception_vector_count;++i) vector_to(c,i,i?0x300:0x100);
     c.load(0x300,{0x1f,0x12}); c.reset();
     control(c,0x10,0); control(c,0x11,0); control(c,0x12,0); control(c,0x13,0xfffe); control(c,0x14,0xfffe); control(c,0x7f,5);
     auto saved=c.registers();c.load(0x700,{0x15,0x50,2,0});
@@ -137,7 +137,7 @@ void bit_tests() {
     }
     for (unsigned tag=0;tag<256;++tag) {
         c=machine(); code(c,{0x1a,uint8_t(tag)},0xfffe); c.step();
-        bool assigned=tag<0x14 || (tag>=0x20 && tag<=0x23) || (tag>=0x30 && tag<=0x33) || (tag>=0x40 && tag<=0x4b) || (tag>=0x60 && tag<=0x87);
+        bool assigned=tag<0x14 || (tag>=0x20 && tag<=0x23) || (tag>=0x30 && tag<=0x33) || (tag>=0x40 && tag<=0x4b) || (tag>=0x60 && tag<=0x87) || (tag>=0xa0 && tag<=0xfb);
         check(c.context() && (((*c.context())[17]!=1)==assigned),"working ext1a complete map");
     }
     for (unsigned tag=0x40;tag<=0x4b;++tag) {
@@ -516,7 +516,7 @@ void worked_images() {
         }
     }
     check(images.size()==12,"published fixture extraction");
-    const int steps[]={57,33,142,42,92,9,48,21,22,6};
+    const int steps[]={57,33,142,42,46,9,48,21,22,6};
     for (unsigned image_index=0;image_index<10;++image_index) {
         unsigned n=image_index%10;
         auto c=machine(); c.load(0x100,images[n]);

@@ -32,7 +32,7 @@ void descriptor(VirtualCPU& c,unsigned map,unsigned seg,std::array<uint16_t,7> d
 }
 VirtualCPU machine() {
     VirtualCPU c(0x80000);
-    for (unsigned i=0;i<8;++i) vector_to(c,i,i?0x300:0x100);
+    for (unsigned i=0;i<vcpu::exception_vector_count;++i) vector_to(c,i,i?0x300:0x100);
     c.load(0x300,{0x1f,0x12}); c.reset();
     for (unsigned i=0;i<5;++i) setc(c,0x10+i,i<3?0:0xfffe);
     setc(c,0x7f,5); return c;
@@ -444,12 +444,12 @@ VirtualCPU control_machine() {
     c.load(kernel_images::control_fault_origin,kernel_images::control_fault);
     c.load(kernel_images::control_probe_origin,kernel_images::control_probe);
     c.load(0xa000,kernel_images::control_registry); c.load(0x1400,{1});
-    for (unsigned cause:{1u,2u,3u,4u,7u}) vector_to(c,cause,0x1800);
+    for (unsigned cause:{1u,2u,3u,4u,7u,8u}) vector_to(c,cause,0x1800);
     return c;
 }
 void request(VirtualCPU& c,unsigned map,unsigned segment,unsigned generation,std::array<uint16_t,7> fields={}) {
     std::vector<uint8_t> bytes(32);
-    std::array<uint16_t,10> values{uint16_t(map),uint16_t(segment),uint16_t(generation),fields[0],fields[1],fields[2],fields[3],fields[4],fields[5],fields[6]};
+    std::array<uint16_t,10> values{uint16_t(map),uint16_t(segment),fields[0],fields[1],fields[2],fields[3],fields[4],fields[5],fields[6],uint16_t(generation)};
     for (unsigned i=0;i<values.size();++i) { bytes[2*i]=uint8_t(values[i]); bytes[2*i+1]=uint8_t(values[i]>>8); }
     c.load(0x6000,bytes);
 }
@@ -499,11 +499,11 @@ void kernel_control_library() {
     c.registers().flags=0x2d;
     check(control_call(c,control_descriptor_install)==std::make_pair(0u,1u),"guest descriptor install");
     check(ps(c).descriptors.at(0x703)==std::array<uint16_t,7>{3,0x19,0,0,1,0,0},"guest installs complete descriptor");
-    check(control_call(c,control_map_publish)==std::make_pair(0u,1u) && word(c,0x6004)==1,"guest publishes first generation");
+    check(control_call(c,control_map_publish)==std::make_pair(0u,1u) && word(c,0x6012)==1,"guest publishes first generation");
     check(control_call(c,control_map_acquire)==std::make_pair(0u,1u),"guest PCB map lease");
     check(control_call(c,control_map_invalidate)==std::make_pair(2u,0u) && ps(c).published[7],"lease blocks invalidation");
     check(control_call(c,control_map_release)==std::make_pair(0u,1u),"guest lease release");
-    check(control_call(c,control_map_invalidate)==std::make_pair(0u,1u) && !ps(c).published[7] && word(c,0x6004)==2,"guest invalidate advances generation");
+    check(control_call(c,control_map_invalidate)==std::make_pair(0u,1u) && !ps(c).published[7] && word(c,0x6012)==2,"guest invalidate advances generation");
     request(c,7,3,1); check(control_call(c,control_map_publish)==std::make_pair(4u,0u),"stale generation rejected");
     request(c,7,3,2); check(control_call(c,control_map_publish)==std::make_pair(0u,1u),"generation reuse publishes only fresh handle");
     request(c,0,3,0,{0,0,0xc000,0xf800,0xf800,0,0});
@@ -532,7 +532,18 @@ void kernel_control_library() {
     request(seeded,7,3,0,{3,0x19,0,0,1,0,0});
     cases.push_back({control_descriptor_install,control_committed_descriptor_install,control_end_descriptor_install,seeded});
     auto installed=seeded; control_call(installed,control_descriptor_install);
+    auto readback=installed;
+    request(readback,7,3,0,{0xffff,0xffff,0xffff,0xffff,0xffff,0xffff,0xffff});
+    check(control_call(readback,control_descriptor_readback)==std::make_pair(0u,1u) && word(readback,0x6004)==3 && word(readback,0x6006)==0x19 && word(readback,0x6012)==0,"guest bulk committed readback ignores stale payload and preserves generation");
+    for(unsigned bad=4;bad<18;++bad) {
+        auto trial=installed;request(trial,7,3,0,{0xffff,0xffff,0xffff,0xffff,0xffff,0xffff,0xffff});
+        std::vector<uint8_t> original;for(unsigned i=0;i<18;++i)original.push_back(trial.peek(0x6000+i));
+        trial.map(0x6000+bad,1,false);
+        check(control_call(trial,control_descriptor_readback)==std::make_pair(3u,0u),"guest STC fault recovers before whole-image commit");
+        for(unsigned i=0;i<18;++i)check(trial.peek(0x6000+i)==original[i],"faulted readback preserves entire caller record");
+    }
     cases.push_back({control_descriptor_remove,control_committed_descriptor_remove,control_end_descriptor_remove,installed});
+    cases.push_back({control_descriptor_readback,control_committed_descriptor_readback,control_end_descriptor_readback,installed});
     cases.push_back({control_map_publish,control_committed_map_publish,control_end_map_publish,installed});
     auto live=installed; control_call(live,control_map_publish);
     cases.push_back({control_map_invalidate,control_committed_map_invalidate,control_end_map_invalidate,live});
@@ -557,7 +568,8 @@ void kernel_control_library() {
         for (unsigned pc:path) {
             if (pc<control_owned_start || pc>=control_owned_end) continue;
             bool set_control=item.initial.peek(pc)==0x1f && (item.initial.peek(pc+1)&0xf8)==0xb0;
-            if (!set_control && pc!=item.post && pc!=item.post-3 && item.entry!=control_uaccess_begin && item.entry!=control_uaccess_end) continue;
+            unsigned commit_length=item.entry==control_descriptor_install || item.entry==control_descriptor_readback?2:3;
+            if (!set_control && pc!=item.post && pc!=item.post-commit_length && item.entry!=control_uaccess_begin && item.entry!=control_uaccess_end) continue;
             auto trial=item.initial; vector_to(trial,2,0x1c00);
             const auto before=ps(trial); auto result=control_call(trial,item.entry,pc);
             bool durable=pc>=item.post && pc<item.end;
@@ -655,10 +667,10 @@ void kernel_control_library() {
 }
 void kernel_demo() {
     VirtualCPU c(0x80000);
-    for (unsigned i=0;i<8;++i) vector_to(c,i,i==0?0x100:i==5?0x1000:i==6?0x1200:0x1800);
+    for (unsigned i=0;i<vcpu::exception_vector_count;++i) vector_to(c,i,i==0?0x100:i==5?0x1000:i==6?0x1200:0x1800);
     using namespace kernel_images;
     c.load(boot_origin,boot); c.load(irq_origin,irq); c.load(swi_origin,swi);
-    c.load(memory_origin,memory); c.load(copy_origin,copy); c.load(load_context_origin,load_context);
+    c.load(memory_origin,memory); c.load(copy_origin,copy); c.load(load_context_origin,load_context); c.load(bootstrap_context_origin,bootstrap_context);
     c.load(controls_origin,controls); c.load(control_fault_origin,control_fault); c.load(0xa000,control_registry);
     c.load(0x1400,{1}); c.load(0x10100,user); c.load(0x20100,user); c.reset();
     auto replayed=c;

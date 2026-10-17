@@ -2,7 +2,7 @@
 MOV.W #$1111,r4
 MOV.W #$2222,r5
 MOV.B #7,r0
-CALL framed
+CALLR framed
 MOV.W r0,[$2000]
 MOV.W r4,[$2002]
 MOV.W r5,[$2004]

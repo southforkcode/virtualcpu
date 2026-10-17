@@ -36,9 +36,9 @@ GETX xorigin_mode,r0
 TST.W r0
 BEQ rx_return
 GETX xpc,r0
-CMPI.W #33748,r0
+CMPI.W #33622,r0
 BNE rx_return
-MOV.W #33749,r0
+MOV.W #33623,r0
 SETX r0,xpc
 rx_return:
 IRET
@@ -83,7 +83,7 @@ GETX xtrap,r0
 TST.W r0
 BNE $1400
 MOV.W #$4000,r5
-CALL $1600
+CALL $1700
 MOV.W #$6000,r4
 CALL $7038
 TST.W r0
@@ -174,46 +174,7 @@ current_a:
 MOV.W #$4000,r7
 RET
 save:
-GETX xr0,r0
-MOV.W r0,[r4+0]
-GETX xr1,r0
-MOV.W r0,[r4+2]
-GETX xr2,r0
-MOV.W r0,[r4+4]
-GETX xr3,r0
-MOV.W r0,[r4+6]
-GETX xr4,r0
-MOV.W r0,[r4+8]
-GETX xr5,r0
-MOV.W r0,[r4+10]
-GETX xr6,r0
-MOV.W r0,[r4+12]
-GETX xr7,r0
-MOV.W r0,[r4+14]
-GETX xpc,r0
-MOV.W r0,[r4+16]
-GETX xcs,r0
-MOV.W r0,[r4+18]
-GETX xcsr,r0
-MOV.W r0,[r4+20]
-GETX xsp,r0
-MOV.W r0,[r4+22]
-GETX xsb,r0
-MOV.W r0,[r4+24]
-GETX xst,r0
-MOV.W r0,[r4+26]
-GETX xss,r0
-MOV.W r0,[r4+28]
-GETX xdp,r0
-MOV.W r0,[r4+30]
-GETX xds,r0
-MOV.W r0,[r4+32]
-GETX xprocess_map,r0
-MOV.W r0,[r4+34]
-GETX xuaccess_map,r0
-MOV.W r0,[r4+36]
-GETX xuaccess_segment,r0
-MOV.W r0,[r4+38]
+STX [r4]
 RET
 ; A request owns a generation lease until exactly one completion/cancellation.
 request_handle:
@@ -221,7 +182,7 @@ MOV.W #$6100,r4
 MOV.W [r7+34],r0
 MOV.W r0,[r4]
 MOV.W [r7+40],r0
-MOV.W r0,[r4+4]
+MOV.W r0,[r4+18]
 RET
 service_if_blocked:
 MOV.W [r7+42],r0
@@ -353,7 +314,14 @@ switch:
 CALL validate
 TST.W r0
 BNE rollback
+MOV.W #1,r0
+MOV.W r0,[$3032]
 CALL $1600
+MOV r0,r1
+MOV.W #0,r0
+MOV.W r0,[$3032]
+TST.W r1
+BNE rollback
 MOV.W [$3006],r0
 ADDI.W #1,r0
 MOV.W r0,[$3006]
@@ -460,16 +428,16 @@ BNE $1400
 MOV.W #3,r0
 MOV.W r0,[r4+2]
 MOV.W #7,r0
-MOV.W r0,[r4+6]
+MOV.W r0,[r4+4]
 MOV.W #$19,r0
-MOV.W r0,[r4+8]
+MOV.W r0,[r4+6]
 MOV.W #0,r0
+MOV.W r0,[r4+8]
 MOV.W r0,[r4+10]
-MOV.W r0,[r4+12]
-MOV.W r0,[r4+16]
-MOV.W r0,[r4+18]
-MOV.W #1,r0
 MOV.W r0,[r4+14]
+MOV.W r0,[r4+16]
+MOV.W #1,r0
+MOV.W r0,[r4+12]
 CALL $7000
 TST.W r0
 BNE $1400

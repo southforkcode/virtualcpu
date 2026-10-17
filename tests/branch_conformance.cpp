@@ -10,7 +10,7 @@ void setc(VirtualCPU& c,unsigned selector,unsigned value) {
 }
 VirtualCPU machine() {
     VirtualCPU c(0x40000);
-    for(unsigned v=0;v<8;++v)c.load(4*v,{0,uint8_t(v?3:1),0,0});
+    for(unsigned v=0;v<vcpu::exception_vector_count;++v)c.load(4*v,{0,uint8_t(v?3:1),0,0});
     c.load(0x300,{0x1f,0x12});c.reset();
      {for(unsigned i=0;i<5;++i)setc(c,0x10+i,i<3?0:0xfffe);setc(c,0x7f,5);}
     return c;

@@ -15,7 +15,7 @@ std::string record(const VirtualCPU& c,const std::string& payload) {
 }
 VirtualCPU device(MachineProfile profile=MachineProfile::ConsoleV1) {
     VirtualCPU c(0x80000,profile);
-    for(unsigned i=0;i<8;++i) c.load(4*i,{0,1,0,0});
+    for(unsigned i=0;i<vcpu::exception_vector_count;++i) c.load(4*i,{0,1,0,0});
     c.load(0x100,{0}); c.reset();
     for(unsigned i=0;i<6;++i) {
         c.registers().r[7]=i==5?5:i>=3?0xfffe:0;
@@ -104,6 +104,41 @@ void devices() {
     auto bad=header; bad[bad.find("version\":2")+9]='1';
     check(artifact.verify_replay_header(bad,ram,backing)==HostError::BadProfile,"console rejects version-one header");
     ram[0x200]=1; check(artifact.verify_replay_header(header,ram,backing)==HostError::BadProfile,"console replay rejects changed artifact");
+}
+void bulk_rejects_devices() {
+    // Bulk RAM-only transfers must not sample RX or write a device, even if a
+    // RAM descriptor aliases physical MMIO. Test both profiles.
+    for(auto profile:{MachineProfile::MinimalV1,MachineProfile::ConsoleV1})
+      for(bool ram_alias:{false,true}) for(unsigned tag:{0xc0u,0xc4u,0xc8u,0xccu})
+      for(unsigned offset:{0u,0x80u}) {
+        auto c=device(profile);
+        if(ram_alias) {
+            for(auto [selector,value]:std::vector<std::pair<unsigned,unsigned>>{
+                {0x20,0},{0x21,255},{0x22,255},{0x23,0xc1},{0x24,0},
+                {0x25,256},{0x26,0},{0x27,0},{0x28,0},{0x7f,1}}) {
+                c.registers().r[7]=value;
+                instruction(c,{0x1f,0xb7,uint8_t(selector)});
+            }
+        }
+        instruction(c,{0x26,0}); // Give LDX/STX a valid active-frame prerequisite.
+        auto old=ps(c).frames.front();
+        if(profile==MachineProfile::ConsoleV1) {
+            BoundaryEvent input{c.run(),c.boundary(),c.next_sequence(),BoundaryEvent::Kind::ConsoleInput};
+            input.data={0x55};check(c.apply_boundary_events({input})==HostError::None,"bulk device fixture input");
+        }
+        auto rx=ps(c).console_rx;auto tx=ps(c).console_tx;auto descriptors=ps(c).descriptors;
+        auto commits=ps(c).device_commits;auto time=ps(c).time;
+        c.registers().ds=255;c.registers().r[4]=offset;c.measure_traffic(true);
+        instruction(c,{0x1f,uint8_t(tag)});
+        check(ps(c).frames.size()==2 && ps(c).frames.back().words[17]==2 &&
+              ps(c).frames.back().memory[10]==7,"bulk images reject DEVICE before any subtransfer");
+        check(ps(c).frames.front().words==old.words && ps(c).frames.front().controls==old.controls &&
+              ps(c).frames.front().origin==old.origin && ps(c).frames.front().bootstrap==old.bootstrap &&
+              ps(c).descriptors==descriptors,"rejected bulk instruction retains old frame and descriptors");
+        check(c.step_traffic().mmio_samples==0 && c.step_traffic().ram_writes==0 &&
+              ps(c).device_commits==commits && ps(c).console_rx==rx && ps(c).console_tx==tx &&
+              ps(c).time==time,"bulk DEVICE failure neither consumes RX nor commits output or retirement");
+    }
 }
 // Compare every retained CPU/device field, including normally invisible staging.
 bool same_state(const VirtualCPU& c,const VirtualCPU& d) {
@@ -229,6 +264,43 @@ void candidate_rollback() {
     check(same,"candidate rollback final RAM replay");
     std::cout<<"invalid candidate rollback: "<<steps<<" boundaries\n";
 }
+void atomic_load_recovery() {
+    using namespace kernel_images;
+    // Corrupt only after software validation; LDX must catch what the policy
+    // validator cannot see, then recover through the exact pinned instruction.
+    for(unsigned kind=0;kind<4;++kind) {
+        auto c=console_guest::machine();auto replayed=c;
+        bool injected=false,recovered=false;unsigned steps=0;std::optional<ProtectedFrame> original;
+        while(steps++<30000) {
+            if(!injected && c.registers().pc==load_context_origin && word(c,0x3032)==1) {
+                injected=true;original=ps(c).frames.front();auto pointer=c.registers().r[5];
+                for(auto* m:{&c,&replayed}) {
+                    if(kind==0)console_guest::word(*m,pointer+20,0xffff);
+                    if(kind==1)console_guest::word(*m,pointer+22,0);
+                    if(kind==2)m->map(pointer+39,1,false);
+                    if(kind==3) {
+                        auto selected=word(*m,pointer+34);
+                        auto d=ps(*m).descriptors.at(uint16_t((selected<<8)|1));
+                        // Incoming PC's byte is pinned in normal software; this
+                        // diagnostic removes only the candidate target backing.
+                        m->map((unsigned(d[0])<<16)|word(*m,pointer+16),1,false);
+                    }
+                }
+            }
+            check(c.step()==replayed.step() && same_state(c,replayed),"LDX recovery full-state replay");
+            if(injected && ps(c).frames.size()==2)check(ps(c).frames.front().words==original->words && ps(c).frames.front().controls==original->controls && ps(c).frames.front().origin==original->origin && ps(c).frames.front().bootstrap==original->bootstrap,"nested LDX recovery retains lower frame and authority");
+            if(injected && c.registers().pc==console_rollback) {
+                // The CPU-owned original has never changed. Its independently
+                // saved RAM backup still has the original target and backing.
+                check(original && ps(c).frames.size()==1 && ps(c).frames.front().words==original->words && ps(c).frames.front().controls==original->controls,"failed LDX preserves original outer image");
+                recovered=true;
+            }
+            if(recovered && c.mode()==Mode::User)break;
+            check(c.state()==ExecutionState::Running && c.registers().pc!=0x1401,"registered LDX fault recovers");
+        }
+        check(injected && recovered && c.mode()==Mode::User && ps(c).controls==original->controls && word(c,0x3032)==0,"LDX guard released and original process resumed");
+    }
+}
 void guests() {
     guest({"blocking terminal"});
     Case t{"input before read"};t.when=When::Before;guest(t);
@@ -250,6 +322,6 @@ void guests() {
 }
 }
 int main() {
-    try { devices(); guests(); candidate_rollback(); std::cout<<checks<<" console checks passed\n"; }
+    try { devices(); bulk_rejects_devices(); guests(); candidate_rollback(); atomic_load_recovery(); std::cout<<checks<<" console checks passed\n"; }
     catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

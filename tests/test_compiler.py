@@ -10,7 +10,7 @@ class CompilerTests(unittest.TestCase):
     def test_production_assembler_is_the_only_encoder(self):
         for path in sorted((Path(__file__).resolve().parents[1]/'examples/workloads').glob('*.c')):
             with self.subTest(path=path.name):
-                library=path.stem=='kernel_helper'
+                library=path.stem.endswith('_helper')
                 a=compile_source(path.read_text(),0xb000 if library else 0x100,library)
                 rows=assemble(a['assembly'],a['origin'])
                 self.assertEqual(bytes(a['code']),b''.join(b for _,b,_ in rows))
@@ -70,7 +70,6 @@ class CompilerTests(unittest.TestCase):
         for source in (
             '#include <stdint.h>\nu16 main(){return 0;}',
             'u32 main(){return 0;}',
-            'u16 main(){return 7/2;}',
             'u16 main(){u16 n=2;u16 a[n];return 0;}',
             'u16 main(){u16 **p;return 0;}',
             'u16 main(){u16 x=1;u16 n=2;return x<<n;}',
@@ -87,6 +86,40 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(a['data'],[1,0,255,255])
         for source in ('u8 *p=42;u16 main(){return 0;}', 'u8 *p=(u8 *)(ss u8 *)1;u16 main(){return 0;}', 'u8 *p=(u8 *)65535+1;u16 main(){return 0;}', 'u8 *p=(u8 *)((u8 *)65535+1);u16 main(){return 0;}'):
             with self.assertRaises(ValueError):compile_source(source)
+
+    def test_integer_arithmetic_promotions_and_precedence(self):
+        for types,expected in (('u16 a,u16 b','U'),('i16 a,i16 b','S'),('i8 a,u8 b','S'),('i8 a,u16 b','U'),('u8 a,i16 b','S')):
+            a=compile_source(f'i16 f({types}){{return a/b+a%b;}}u16 main(){{return 0;}}')['assembly']
+            self.assertIn('DIV'+expected+' r0,r1',a);self.assertIn('MOD'+expected+' r0,r1',a)
+        a=compile_source('u16 main(){u16 a=100;u16 b=7;return a*b+a/b+a%b;}')['assembly']
+        self.assertIn('MUL r1,r0',a);self.assertNotIn('sc_mulskip',a)
+        c=Compiler('i16 a=-100/7;i16 b=-100%7;u16 c=(i16)65535/(u16)2;u16 d=2+18/3%4*5;u16 main(){return 0;}')
+        self.assertEqual(list(c.data),[242,255,254,255,255,127,12,0])
+        for value in ('1/0','1%0','(i16)32768/-1','(i16)32768%-1'):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'Constant .* (zero|overflow)'):Compiler('i16 x='+value+';u16 main(){return 0;}')
+        for op in ('/','%'):
+            with self.assertRaises(ValueError):compile_source('u16 main(){u8 *p=(u8 *)1;return p'+op+'2;}')
+
+    def test_strength_reduction_and_checked_multiply_remain_distinct(self):
+        a=compile_source('u16 main(){u16 x=123;return x*8+x/8+x%8;}')['assembly']
+        for op in ('SHLI.W #3','SHRI.W #3','ANDI.W #7'):self.assertIn(op,a)
+        self.assertNotIn('DIVU',a)
+        a=compile_source('i16 f(i16 x){return x/8+x%8;}u16 main(){return 0;}')['assembly']
+        self.assertIn('DIVS',a);self.assertIn('MODS',a)
+        a=compile_source('u16 main(){u8 *p=(u8 *)0;u16 x=40000;u16 y=2;return p[x*y];}')['assembly']
+        self.assertIn('sc_multiply_',a);self.assertIn('BCS sc_failure_3',a);self.assertNotIn('MUL r1,r0',a)
+        self.assertIn('DEC.W r2',a);self.assertNotIn('SUBI.W #1,r2',a)
+        a=compile_source('struct X{u8 a;u8 b;u8 c;};struct X xs[2];u16 main(){u16 n=1;return xs[n].a;}')['assembly']
+        self.assertIn('CMPI.W #21845',a);self.assertIn('MUL r2,r0',a)
+
+    def test_density_selection_keeps_widths_and_checked_addresses(self):
+        source='u16 main(){u16 n=3;n=n+1;n=n-1;return n;}'
+        a=compile_source(source)['assembly'];self.assertIn('INC.W r0',a);self.assertIn('DEC.W r0',a)
+        a=compile_source('i8 x=-128;u16 main(){return x;}')['assembly'];self.assertIn('SEXT r0',a)
+        a=compile_source('u8 x=255;u16 main(){return x+1;}')['assembly'];self.assertIn('INC.W r0',a);self.assertNotIn('INC.B',a)
+        a=compile_source('u16 main(){u8 *p=(u8 *)0;u16 n=3;return p[n+1];}')['assembly']
+        self.assertIn('BCS sc_failure_3',a);self.assertNotIn('[r4+]',a)
+        self.assertTrue(compile_source('u16 f(){return 1;}u16 main(){return f();}')['assembly'].count('CALLR ')==2)
 
     def test_declaration_and_object_limits(self):
         for source in ('u16 main(){u8 x[0];return 0;}', 'u8 data[4096];u16 main(){return 0;}', 'u16 main(){u16 x[600];return 0;}'):

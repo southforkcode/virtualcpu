@@ -1,0 +1,1 @@
+u16 results[6];u16 main(){i8 n=-9;u8 d=4;i16 s=-9;u16 u=4;u8 a=255;i8 b=-1;results[0]=n/d;results[1]=n%d;results[2]=s/u;results[3]=s%u;results[4]=a/b;results[5]=a%b;return results[0]==(u16)-2 && results[1]==65535 && results[2]==16381 && results[3]==3 && results[4]==(u16)-255 && results[5]==0;}

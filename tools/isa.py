@@ -88,7 +88,7 @@ def emit(identifier, fields=None, operand=0):
 
 def encode(ins, pc, labels):
     op, args = ins.mnemonic, ins.args
-    aliases = {a['mnemonic']: a['expands_to'] for a in META['aliases'] if 'adjustment' not in a and not a.get('same_general_register_operands') and not a.get('same_b0_register_operands')}
+    aliases = {a['mnemonic']: a['expands_to'] for a in META['aliases'] if 'adjustment' not in a and 'immediate' not in a and not a.get('same_general_register_operands') and not a.get('same_b0_register_operands')}
     op = aliases.get(op, op)
     if op in ('INCP','DECP'):
         require(len(args)==1, 'Pointer alias needs one destination')
@@ -99,6 +99,28 @@ def encode(ins, pc, labels):
     def target(text):
         return labels[text] if text in labels else number(text)
     family=op.split('.')[0]
+    if family=='SEXT':
+        require(op in ('SEXT','SEXT.W') and len(args)==1,'Expected one B0 sign-extension operand')
+        return emit('sext',{'destination':args[0]})
+    if family in ('INC','DEC'):
+        require(op in (family,family+'.W',family+'.B') and len(args)==1, 'Expected one B0 unit operand')
+        if op.endswith('.B'):return emit(('addi' if family=='INC' else 'subi')+'_8',{'destination':args[0]},1)
+        return emit(family.lower()+'_16',{'destination':args[0]})
+    if family in ('MUL','DIVU','DIVS','MODU','MODS'):
+        require(op in (family,family+'.W') and len(args)==2, 'Expected two word B0 operands')
+        return emit(family.lower(),{'source':args[0],'destination':args[1]})
+    if family in ('LDX','STX'):
+        require(op==family and len(args)==1, 'Expected context image B1 pointer')
+        match=re.fullmatch(r'\[(r[4-7])\]',args[0].replace(' ',''))
+        require(match is not None, 'Context image requires a plain B1 pointer')
+        return emit(op.lower()+'_ctx',{'base':match[1]})
+    if family in ('LDC','STC'):
+        require(op==family and len(args)==2, 'Expected descriptor image and B1 pointer')
+        memory,kind=args if op=='LDC' else args[::-1]
+        require(kind=='desc', 'Only DESC/1 control images are assigned')
+        match=re.fullmatch(r'\[(r[4-7])\]',memory.replace(' ',''))
+        require(match is not None, 'Descriptor image requires a plain B1 pointer')
+        return emit(op.lower()+'_desc',{'base':match[1]})
     if family in ('ADDI','SUBI','CMPI','ANDI','ORI','XORI'):
         require(op in (family,family+'.B',family+'.W') and len(args)==2, 'Invalid immediate ALU operands/width')
         return emit(f'{family.lower()}_{8 if op.endswith(".B") else 16}', {'destination':args[1]}, imm(args[0]))
@@ -137,7 +159,7 @@ def encode(ins, pc, labels):
     if op in ('NOP','HALT','DI','EI','RET','RETF','IRET'):
         require(not args, 'Unexpected operand')
         return emit(op.lower())
-    if family in BRANCHES:
+    if family in BRANCHES or family=='CALLR':
         require(op in (family,family+'.S',family+'.W') and len(args)==1, 'Invalid branch operands/width')
         short=op.endswith('.S')
         return emit(family.lower()+('_short' if short else ''), operand=target(args[0])-pc-(2 if short else 3))
@@ -182,6 +204,9 @@ def encode(ins, pc, labels):
         memory, reg = (dst,src) if store else (src,dst)
         require(memory.endswith(']'), 'Invalid memory operand')
         inner=memory[1:-1].replace(' ','')
+        post=re.fullmatch(r'(r[4-7])\+',inner)
+        if post:
+            return emit(f'mov_post_{"store" if store else "load"}_{bits}',{'source' if store else 'destination':reg,'base':post[1]})
         pointer = re.fullmatch(r'(?:(ds|cs):)?(r[4-7])([+-].+)?',inner)
         fields={'source' if store else 'destination':reg}
         direction='store' if store else 'load'
@@ -219,7 +244,7 @@ def assemble(source, origin=0x100):
             name=item.lower();require(name not in label_items,'Duplicate label');label_items[name]=i
             continue
         family=item.mnemonic.split('.')[0]
-        if family in BRANCHES:
+        if family in BRANCHES or family=='CALLR':
             require(item.mnemonic in (family,family+'.S',family+'.W') and len(item.args)==1,'Invalid branch operands/width')
             branches[i]=item;initial[i]=2 if item.mnemonic.endswith('.S') else 3
         elif item.mnemonic in ('CALL','CALLF','JS','JL'):
@@ -232,7 +257,7 @@ def assemble(source, origin=0x100):
             if isinstance(item,str):labels[item.lower()]=pc
             else:positions[i]=pc;pc+=sizes[i]
         return labels,positions,pc
-    automatic={i for i,item in branches.items() if item.mnemonic in BRANCHES}
+    automatic={i for i,item in branches.items() if item.mnemonic in BRANCHES or item.mnemonic=='CALLR'}
     pinned=set()
     while True:
         sizes=dict(initial)
@@ -294,9 +319,13 @@ def decode(data):
 def disassemble(data, pc=0x100):
     e,v=decode(data); name=e['id']; op=e['mnemonic']; args=[]
     def literal(value): return f'${value:X}' if value>=0 else f'-${-value:X}'
-    if e['semantic'].startswith('branch_'):
+    if e['semantic'].startswith('branch_') or e['semantic']=='call_near_relative':
         op+='.S' if e['length']==2 else '.W'
         args=[literal(pc+e['length']+v['displacement'])]
+    elif name in ('ldx_ctx','stx_ctx'): args=['['+v['base']+']']
+    elif name in ('ldc_desc','stc_desc'):
+        memory='['+v['base']+']'
+        args=[memory,'DESC'] if name=='ldc_desc' else ['DESC',memory]
     elif name.startswith('addp_'): args=['#'+str(v['adjustment']),e['destination']]
     elif name=='adjsp': args=['#'+str(v['adjustment'])]
     elif name=='swi': args=['#'+str(v['service'])]
@@ -304,6 +333,7 @@ def disassemble(data, pc=0x100):
         names=META['control_indices'] if name in ('getc','setc') else META['context_indices']
         selector=next(n for n,i in names.items() if i==v['selector'])
         args=[selector,v['destination']] if name.startswith('get') else [v['source'],selector]
+    elif e['semantic']=='unit_arithmetic':op+='.W';args=[v['destination']]
     elif e['semantic']=='alu_immediate':
         op+='.'+('B' if e['operation_bits']==8 else 'W'); args=['#'+literal(v['immediate']),v['destination']]
     elif name=='getx': args=[v['context'],v['destination']]
@@ -320,6 +350,7 @@ def disassemble(data, pc=0x100):
         else:
             disp=v.get('displacement',v.get('offset',0)); b=v['base'] if base=='B1' else base
             mem=(a['segment']+':' if base=='B1' and a['segment']!='uaccess' else '')+b+(('+' if disp>=0 else '-')+literal(abs(disp)) if disp else '')
+        if a.get('post_increment'):mem=v['base']+'+'
         memory='['+mem+']'; args=[v['source'],memory] if 'source' in v else [memory,v['destination']]
         op+='.'+('B' if e['transfer_bits']==8 else 'W')
     elif name.startswith('mov_immediate'): op+='.'+('B' if e['transfer_bits']==8 else 'W'); args=['#'+literal(v['immediate']),v['destination']]

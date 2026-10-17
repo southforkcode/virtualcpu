@@ -1,0 +1,1 @@
+u8 digits[5]={54,53,53,51,53};u8 output[5];u16 parse(u8 *p){u16 value=0;u16 ten=10;for(u16 i=0;i<5;i=i+1){u16 d=p[i]-48;if(d>9 || value>6553 || (value==6553 && d>5)){return 0;}value=value*ten+d;}return value;}u16 main(){u16 n=parse(digits);u16 value=n;u16 ten=10;for(u16 i=5;i>0;i=i-1){output[i-1]=48+value%ten;value=value/ten;}return n;}

@@ -1,5 +1,6 @@
 ; Guest control library, K CS=DS=SS=0, code $7000; see ISA_EXAMPLES.md.
 ; Public jump slots are seven bytes. r4=request (32 pinned bytes at $6000..$67DF).
+; Request: DESC/1 or entry payload at +0..16, generation at +18, query output +20..28.
 ; r0=status (0 OK,1 INVALID,2 BUSY,3 FAULT,4 STALE), r1=committed.
 ; Preserve r4-r7 and caller NZCVI; caller owns map-generation handles.
 descriptor_install:
@@ -43,6 +44,9 @@ MOV.W #13,r0
 JS initialize_unowned
 control_abort:
 JS abort_impl
+descriptor_readback:
+MOV.W #14,r0
+JS control_call
 control_call:
 PUSH r4
 PUSH r5
@@ -137,36 +141,20 @@ CMPI.W #11,r0
 BEQ do_map_release
 CMPI.W #12,r0
 BEQ do_uaccess_clear
+CMPI.W #14,r0
+BEQ do_descriptor_readback
 JS invalid
 do_descriptor_install:
 CALL verify_descriptor
-MOV.W [r4],r2
-SETC r2,desc_map
-MOV.W [r4+2],r2
-SETC r2,desc_segment
-MOV.W [r4+6],r2
-SETC r2,desc_frame
-MOV.W [r4+8],r2
-SETC r2,desc_flags
-MOV.W [r4+10],r2
-SETC r2,desc_lower
-MOV.W [r4+12],r2
-SETC r2,desc_upper_lo
-MOV.W [r4+14],r2
-SETC r2,desc_upper_hi
-MOV.W [r4+16],r2
-SETC r2,desc_sb
-MOV.W [r4+18],r2
-SETC r2,desc_st
-MOV.W #1,r2
 commit_descriptor_install:
-SETC r2,command
+LDC [r4],DESC
 committed_descriptor_install:
 JS success
 end_descriptor_install:
 do_descriptor_remove:
 CALL verify_map
 CALL verify_segment
+; Zero is hoisted across all seven scalar fields; no temporary RAM image needed.
 MOV.W [r4],r2
 SETC r2,desc_map
 MOV.W [r4+2],r2
@@ -185,6 +173,14 @@ SETC r2,command
 committed_descriptor_remove:
 JS success
 end_descriptor_remove:
+do_descriptor_readback:
+CALL verify_map
+CALL verify_segment
+commit_descriptor_readback:
+STC DESC,[r4]
+committed_descriptor_readback:
+JS success
+end_descriptor_readback:
 do_map_publish:
 CALL verify_map
 MOV.W [r4],r2
@@ -238,35 +234,35 @@ CALL finish_invalidate
 JS success
 end_map_invalidate:
 do_entry_configure:
-MOV.W [r4+6],r2
-MOV.W [r4+8],r3
+MOV.W [r4+4],r2
+MOV.W [r4+6],r3
 OR r3,r2
 TST.W r2
 BNE invalid
-MOV.W [r4+10],r2
+MOV.W [r4+8],r2
 CMPI.W #$C000,r2
 BCC invalid
-MOV.W [r4+14],r3
+MOV.W [r4+12],r3
 CMP r2,r3
 BCC invalid
 SUBI.W #2,r3
 CMP r2,r3
 BCC invalid
-MOV.W [r4+12],r2
+MOV.W [r4+10],r2
 CMPI.W #$FFFE,r2
 BHI invalid
-MOV.W [r4+14],r3
+MOV.W [r4+12],r3
 CMP r3,r2
 BCC invalid
-MOV.W [r4+6],r2
+MOV.W [r4+4],r2
 SETC r2,entry_ds
-MOV.W [r4+8],r2
+MOV.W [r4+6],r2
 SETC r2,entry_ss
-MOV.W [r4+10],r2
+MOV.W [r4+8],r2
 SETC r2,entry_sb
-MOV.W [r4+12],r2
+MOV.W [r4+10],r2
 SETC r2,entry_st
-MOV.W [r4+14],r2
+MOV.W [r4+12],r2
 SETC r2,entry_sp
 MOV.W #5,r2
 commit_entry_configure:
@@ -316,7 +312,7 @@ MOV.W #1,r2
 MOV.W r2,[$500E]
 MOV.W [r4],r2
 MOV.W r2,[r6+2]
-MOV.W [r4+4],r2
+MOV.W [r4+18],r2
 MOV.W r2,[r6+4]
 MOV.W [$5060],r2
 MOV.W r2,[r6+6]
@@ -346,7 +342,7 @@ MOV.W [r4],r3
 CMP r2,r3
 BNE stale
 MOV.W [r6+4],r2
-MOV.W [r4+4],r3
+MOV.W [r4+18],r3
 CMP r2,r3
 BNE stale
 MOV.W [r5+2],r2
@@ -433,7 +429,7 @@ MOV.W r2,[$5016]
 CMPI.W #1,r2
 BHI stale
 MOV.W [r5],r2
-MOV.W [r4+4],r3
+MOV.W [r4+18],r3
 CMP r2,r3
 BNE stale
 RET
@@ -486,15 +482,17 @@ RET
 verify_descriptor:
 CALL verify_map
 CALL verify_segment
-MOV.W [r4+6],r2
+MOV.W [r4+4],r2
 CMPI.W #255,r2
 BHI invalid
-MOV.W [r4+8],r2
+MOV.W [r4+6],r2
 CMPI.W #$1FF,r2
 BHI invalid
 ANDI.W #1,r2
 BNE present_descriptor
 MOV.W #0,r3
+MOV.W [r4+4],r2
+OR r2,r3
 MOV.W [r4+6],r2
 OR r2,r3
 MOV.W [r4+8],r2
@@ -507,59 +505,57 @@ MOV.W [r4+14],r2
 OR r2,r3
 MOV.W [r4+16],r2
 OR r2,r3
-MOV.W [r4+18],r2
-OR r2,r3
 TST.W r3
 BNE invalid
 RET
 present_descriptor:
-MOV.W [r4+14],r2
+MOV.W [r4+12],r2
 CMPI.W #1,r2
 BHI invalid
 BEQ full_bound
-MOV.W [r4+12],r2
-MOV.W [r4+10],r3
+MOV.W [r4+10],r2
+MOV.W [r4+8],r3
 CMP r3,r2
 BCC invalid
 BRA bounds_valid
 full_bound:
-MOV.W [r4+12],r2
+MOV.W [r4+10],r2
 TST.W r2
 BNE invalid
 bounds_valid:
 MOV.W [r4],r2
 TST.W r2
 BNE descriptor_kind
-MOV.W [r4+8],r2
+MOV.W [r4+6],r2
 ANDI.W #$38,r2
 BNE invalid
 descriptor_kind:
-MOV.W [r4+8],r2
+MOV.W [r4+6],r2
 TSTI.W #2,r2
 BEQ descriptor_stack
 ANDI.W #$13C,r2
 BNE invalid
 descriptor_stack:
-MOV.W [r4+8],r2
+MOV.W [r4+6],r2
 TSTI.W #4,r2
 BNE stack_descriptor
-MOV.W [r4+16],r2
-MOV.W [r4+18],r3
+MOV.W [r4+14],r2
+MOV.W [r4+16],r3
 OR r3,r2
 BNE invalid
 RET
 stack_descriptor:
-MOV.W [r4+16],r2
-MOV.W [r4+10],r3
+MOV.W [r4+14],r2
+MOV.W [r4+8],r3
 CMP r3,r2
 BCC invalid
-MOV.W [r4+18],r3
+MOV.W [r4+16],r3
 CMP r2,r3
 BCC invalid
-MOV.W [r4+14],r2
+MOV.W [r4+12],r2
 CMPI.W #1,r2
 BEQ descriptor_valid
-MOV.W [r4+12],r2
+MOV.W [r4+10],r2
 CMP r3,r2
 BCC invalid
 descriptor_valid:
@@ -574,7 +570,7 @@ MOV.W #1,r2
 publish_generation:
 MOV.W r2,[r5]
 MOV.W [$500C],r4
-MOV.W r2,[r4+4]
+MOV.W r2,[r4+18]
 MOV.W #1,r2
 MOV.W r2,[r5+4]
 RET
@@ -586,7 +582,7 @@ BEQ quarantine
 ADDI.W #1,r2
 MOV.W r2,[r5]
 MOV.W [$500C],r4
-MOV.W r2,[r4+4]
+MOV.W r2,[r4+18]
 MOV.W #0,r2
 MOV.W r2,[r5+4]
 RET
@@ -783,8 +779,7 @@ MOV.W #$5000,r4
 MOV.W #1352,r1
 MOV.W #0,r2
 initialize_zero:
-MOV.W r2,[r4]
-ADDP #2,r4
+MOV.W r2,[r4+]
 SUBI.W #1,r1
 BNE initialize_zero
 MOV.W #0,r0

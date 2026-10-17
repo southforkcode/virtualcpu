@@ -13,20 +13,21 @@ The six byte/word immediate ALU families are assigned at $80–$AF in
 controls, privilege metadata, and MOVU user-access transfers are assigned below.
 The embedded payload covers every current assignment. Current runtime evidence is recorded in [Appendix C](ISA.md#implementation-status-and-remaining-work).
 
-| Area | Revised draft requirement | Allocation status |
+| Area | Architectural requirement | Allocation status |
 |---|---|---|
 | Existing instructions | Assigned bytes, CSR bits, B0/B1 banks and context indices 0x00–0x14 | Assigned layouts; protected semantics defined in ISA.md |
 | Mode/entry/return | U I=1; protected provenance; eight ordinary frames; failed entry/overflow is terminal | SWI imm8/IRET bytes retained; no executable emergency interface |
 | CPU control access | Readable committed descriptors, published-map state, user-access controls and one-way bootstrap action | GETC `$1F $A0–$A7 selector8`, SETC `$1F $B0–$B7 selector8`; control IDs/commands assigned in ISA.md; layouts included in the payload |
 | Extended context access | Saved protected state and new fault metadata | GETX `$1F $80–$87 index8`, SETX `$1F $90–$97 index8`; 21 new indices assigned; base GETX/SETX included; layouts included in the payload |
-| Faults/vectors | Origin/phase/access/map/start/relevant virtual and physical address/reason record | New word IDs, numeric enums, privilege cause/vector 7, and operation classes assigned in ISA.md; architectural contract assigned |
+| Faults/vectors | Origin/phase/access/map/start/relevant virtual and physical address/reason record | Privilege cause/vector 7 and Arithmetic Fault cause/vector 8; existing context IDs and operation classes retained |
 | Memory | Published/invalidate map control; whole-descriptor publication; U-rights user-access transfer | Controls and MOVU `$27` descriptor family assigned; layouts included in the payload; software generations are not hardware map bits |
 | PIC/timer/MMIO | 16 sources, timer source 0, atomic snapshot/configuration/ACK | `minimal-v1` physical `$FF0000–$FF00FF` assigned in Chapter 7; ordinary MOV, no CPU-control mirror; architectural contract assigned |
 | Immediate ALU | ADDI, SUBI, CMPI, ANDI, ORI, XORI; B0 only, byte/word width | $80–$AF assigned; layouts included in the payload |
 | Compact B1 displacement | Signed -32..31 in existing a=0 descriptor; disp16 fallback | Assigned , no new primary or secondary tags |
 | Short relative branches | All fifteen rel8 predicates, `.S`/`.W` and iterative relaxation | Assigned working `$60–$6E`, `$6F` reserved; layouts in payload |
 | Compact SP memory | Unsigned 0..255 plus off16 fallback, both widths/directions | Assigned working `$28`, 32 secondary tags; layouts in payload |
-| Remaining extensions | Defer post-increment / register-to-pointer arithmetic | No additional assignments |
+| Density operations | Word INC/DEC, B0 SEXT, RAM-only B0/B1 post-increment, relative near CALLR | Assigned below and in the embedded payload; other candidates remain deferred |
+| Structured RAM transfers | Self-contained DESC/1 install/readback and writable CTX/1 load/save | LDC/STC `$1F $C0–$C7`, LDX/STX `$1F $C8–$CF`, two bytes; r4–r7, K DS/map 0, ordinary RAM only |
 
 Unassigned primary bytes and reserved fields are illegal as soon as they are
 known. Do not fetch operands after an unassigned primary opcode. Assigned
@@ -108,7 +109,7 @@ selects three; retain raw images when exact noncanonical bytes are needed. MOV
 
 One primary and a sixth escape table are assigned: ext28 has 32 matching secondary
 values and 224 reserved values. Existing ext15 tags and all assigned bytes remain
-unchanged. Primary totals are 111 assigned / 145 unassigned, with 144 outside the
+unchanged. Primary totals are 113 assigned / 143 unassigned, with 142 outside the
 held $6F branch slot. Metadata schema 5 already supports this dispatch, unsigned
 one-byte operand; seven total decode tables are generated.
 The [current report](ISA_EXAMPLES.md#current-workload-measurements) measures actual
@@ -166,10 +167,51 @@ descriptors/entry tuples atomically. Examples: `1F A2 00` reads process_map into
 r2; `1F B0 7F` executes the command in r0. See the
 [binary reference](ISA.md#protected-control-encoding) for exact reserved/fetch cases.
 
-The working `$1F` table now has 93 assigned / 163 unassigned second-byte values;
+The working `$1F` table now has 109 assigned / 147 unassigned second-byte values;
 the payload represents that same map. GETC/SETC add `$A0–$A7` and `$B0–$B7`;
 extended GETX/SETX below add `$80–$87` and `$90–$97`. All other positions in
 `$80–$BF` remain illegal. These access forms consume no primary value.
+
+### Assigned descriptor-image layouts
+
+| Syntax | Bytes | Layout | Image |
+|---|---:|---|---|
+| `LDC [rp],DESC` | 2 | `$1F`, `$C0+pp` | DESC/1: map, segment, frame, flags, lower, upper_lo, upper_hi, sb, st |
+| `STC DESC,[rp]` | 2 | `$1F`, `$C4+pp` | Same eighteen-byte record; readable header selects committed descriptor |
+
+pp=0–3 selects r4–r7. These eight tags use schema 5 B1 fields at byte 1 bits
+1:0, match mask `$FC`, no immediate operands and no flag writes. Original K DS
+and map 0 select ordinary RAM, with unaligned words allowed and no pointer update.
+The [normative transfer contract](ISA.md#atomic-descriptor-image-transfers) fixes
+whole-span and ordered-word preflight, snapshot/validation/next-PC priority,
+existing privilege classes, immutable scalar staging and width-two diagnostics.
+`1F C0` is `LDC [r4],DESC`; `1F C7` is `STC DESC,[r7]`.
+Other control structure names remain illegal. Writable exception images use the
+separate assigned CTX/1 forms below. Descriptor and context images together add
+sixteen ext1f tags and zero primaries: ext1f is 109 assigned /
+147 unassigned, with 115 available outside held control patterns. Primary counts
+are 113/143. Existing assignments, including `$80–$AF`, are unchanged.
+
+### Assigned writable context-image layouts
+
+| Syntax | Bytes | Layout | Image |
+|---|---:|---|---|
+| `LDX [rp]` | 2 | `$1F`, `$C8+pp` | CTX/1: writable base selectors `$00–$10`, then `$20–$22`, twenty little-endian words |
+| `STX [rp]` | 2 | `$1F`, `$CC+pp` | Same forty-byte RAM layout, no authority/metadata |
+
+pp=0–3 selects r4–r7 at byte 1 bits 1:0, match mask `$FC`, with no immediates
+or flag writes. `1F C9` loads from r5; `1F CC` stores through r4. The
+[normative CTX/1 contract](ISA.md#atomic-writable-exception-context-transfers)
+defines preserved CPU-owned authority, complete return validation, active-frame
+and privilege priority, ordered RAM preflight and atomicity. `$D0–$FF` remains
+unassigned. No scalar context/control selector or primary opcode changes.
+
+The [bootable bulk example](ISA_EXAMPLES.md#bootable-bulk-transfer-and-nested-retry)
+uses `1F C0` (install through r4), `1F C5` (readback through r5), `1F CC` /
+`1F CD` (save through r4/r5), and `1F C9` (validated load through r5).
+The example and native tests use the production assembler and generated decoder;
+no separate encoder or replacement allocation is needed. Conformance checks
+raw bytes, privilege/fetch ordering and the writable context authority boundary.
 
 ### Assigned extended context layouts
 
@@ -236,6 +278,40 @@ KERNEL/FETCH or RESULT_PC instead. No partial transfer commits on failure.
 The payload retains ext27 as the sixth decode table and adds ext28 as the seventh. Generated table counts
 are derived from metadata.
 
+### Assigned word integer arithmetic
+
+| Operation | Secondary tags | Full encoding |
+|---|---|---|
+| MUL | `$A0–$AF` | `$1A ($A0 + 4*rs + rd)` |
+| DIVU | `$B0–$BF` | `$1A ($B0 + 4*rs + rd)` |
+| DIVS | `$C0–$CF` | `$1A ($C0 + 4*rs + rd)` |
+| MODU | `$D0–$DF` | `$1A ($D0 + 4*rs + rd)` |
+| MODS | `$E0–$EF` | `$1A ($E0 + 4*rs + rd)` |
+
+rs/rd are B0 indices 0–3. All eighty forms are two bytes, without an immediate
+or descriptor. Unsuffixed and `.W` assembly select the same encoding; `.B` and
+non-B0 operands reject. Only N/Z are written. Schema 5 represents source bits
+3:2 and destination bits 1:0 in the second byte, mask `$F0` per operation.
+`$88–$9F` and `$FC–$FF` remain illegal before operand access;
+`$F0–$FB` now select the assigned word-unit and SEXT forms. Existing assigned
+tags and `$80–$AF` primary immediate ALU instructions are unchanged.
+
+The [execution contract](ISA.md#mul-divu-divs-modu-mods--word-integer-arithmetic)
+defines low-product results, signed truncation/remainder, overlap and flags.
+Arithmetic Fault cause/vector **8** uses kernel map 0 selector 0 `$0020–$0023`;
+the vector table now has nine assigned four-byte entries, including Reset.
+Zero divisors and DIVS/MODS MIN/-1 fault before final-PC validation. Missing
+instruction bytes still fault during fetch. No new context selector, arithmetic
+subreason, privilege class, primary opcode or decode table is introduced.
+
+The reviewed two-byte design consumes 80 of the 176 formerly free ext1a tags,
+leaving 84 after the twelve word-unit/SEXT tags. A three-byte alternative could consume five tags plus a checked
+`0000ssdd` operand, leaving 159 free with those density tags retained, at one extra byte for every operation.
+The two-byte design is adopted for ordinary arithmetic density; it preserves
+all primary capacity, ext1f control space and compact memory/branch forms.
+The alternative is a fit study, not another executable encoding. Native wide
+multiply and combined DIVMOD remain unassigned and require separate review.
+
 ### Assigned test layouts
 
 [The TST/TSTI review](ISA_EXAMPLES.md#current-workload-measurements) accepts the following B0-only forms:
@@ -249,7 +325,9 @@ are derived from metadata.
 
 Tests preserve all register bits and C/V/I/E, setting width-specific N/Z only.
 Immediate ranges match ANDI; default width is word. The twelve test tags and
-forty shift/rotate tags below give `ext1a` 80 assigned / 176 free. No primary encoding changes.
+forty shift/rotate tags account for 80 ext1a assignments before word integer
+arithmetic. The eighty MUL/DIV/MOD tags bring ext1a to 172 assigned / 84 free.
+No primary encoding changes.
 
 Schema 5 covers all assigned encodings without runtime-version gates. Register,
 selector and reserved-bit validation apply to every decode. The
@@ -289,7 +367,7 @@ fix carry, overflow preservation and fault ordering exactly.
 
 Forty tags × seventeen counts give 680 legal streams; 9,560 more select known
 instructions with invalid count state. The assignment consumes zero primaries,
-needs no longer instruction buffer, and leaves 176 unassigned `$1A` tags. This
+needs no longer instruction buffer, and leaves 84 unassigned `$1A` tags after integer and density arithmetic allocation. This
 accepts the escaped layout: forty dedicated primaries would save one byte per
 instruction but reduce projected primary headroom from 144 to 104, without
 improving functionality. Eight existing one-bit word shifts cost sixteen bytes
@@ -352,115 +430,44 @@ opcode is consumed, and the embedded instruction metadata is unchanged.
 
 ## Opcode allocation budget
 
-**Assignments and remaining planning capacity.** The [assigned allocation ledger](ISA.md#opcode-allocation-ledger)
-accounts for all 256 primary values and each existing escape table. The working
-ISA has 111 assigned primary values and 145 available values (including held `$6F`). The embedded tool
-payload has the same 111 assigned primary values (all for the working ISA). The immediate ALU allocation remains
-`$80–$AF`: 48 values, 18.75% of primary space, with two-byte byte operations and
-three-byte word operations.
+The [assigned ledger](ISA.md#opcode-allocation-ledger) accounts for 113 assigned
+primary values and 143 unassigned (142 outside held `$6F`), ext15 256 assigned/0
+free and ext1a 172 assigned/84 free. Other tables remain unchanged: ext1f 109/147,
+with 115 free outside its 32 held control patterns. Matching a family does not
+make its reserved later operand bits legal. Keep `$80–$AF` unchanged: 48 values,
+18.75% of primary space, for two-byte byte and three-byte word immediate ALU.
 
-The access forms above are assigned by the normative manual; other choices below
-provide a fit and cost estimate, not an allocation, approval of candidate semantics,
-or production tool support. GETC/SETC and extended GETX/SETX already use 32
-positions in the budgeted control/context block; its remaining 32 positions are
-reserved-bit patterns, not executable alternate forms.
+### Assigned density allocation budget
 
-### Candidate layouts and costs
+| Family | Assigned layout | Capacity consumed | Alternative not assigned |
+|---|---|---|---|
+| Word B0 INC/DEC | `$1A $F0–$F3` / `$F4–$F7`, low two bits rd; 2 bytes | Eight ext1a tags, no primary | Eight primaries save one more byte but consume primary space |
+| Low-byte-to-word B0 SEXT | `$1A $F8–$FB`, low two bits rd; 2 bytes | Four ext1a tags, no primary | Four primaries save one more byte |
+| DS RAM-only post-increment MOV | `$15 0100dzrr 000000pp`; 3 bytes | Sixteen ext15 tags, no primary | Sixty-four fragmented ext1f tags could save one byte; all-GPR scope needs separate review |
+| Relative near CALLR | `$56 disp8` / `$57 disp16le`; 2/3 bytes | Two primaries | An escaped width descriptor makes these 3/4 bytes and erases the rel16 gain |
 
-| Family | Assigned or budgeted layout | Primary capacity cost | Secondary or operand-field capacity | Instruction bytes |
-|---|---|---:|---|---|
-| Protected control and extended context access | GETC/SETC and extended GETX/SETX assigned under `$1F` in `$80–$BF` | 0 | 32 assigned tags plus 32 reserved-bit patterns held for the family; selector validity is separate | 3 |
-| Control commands, map/descriptor publication, bootstrap | Assigned writes to command selector `$7F` through SETC | 0 beyond control access | Eight assigned command values; not another primary family per command | 3 per control transfer; complete sequences may need several transfers |
-| User-access byte/word loads/stores | MOVU `$27`, `dazrrr00`, `000000pp`, optional disp16; now assigned | 1, already assigned | 64 valid second-byte patterns; 192 remain reserved; third byte selects four B1 bases and has six reserved bits | 3 without displacement; 5 with disp16 |
-| Minimum PIC/timer | Assigned `minimal-v1` MMIO `$FF0000–$FF00FF` via existing MOV forms | 0 | MMIO addresses/register fields, not instruction opcode space | Existing MOV lengths |
-| rel8 branches | Assigned `$60–$6E`, `$6F` held reserved; same predicate order as rel16 | 15 assigned plus one reserved block position | One signed displacement byte | 2 |
-| Compact B1 simm6 | Assigned working: existing `$15` a=0 forms; descriptor `ddddddpp` | 0 | Reuse upper six bits of the third byte for the existing 64 short-form secondary tags; no new secondary tags | 3; retain 5-byte disp16 fallback |
-| Compact SP uimm8 | Assigned working `$28`, `0d11zrrr`, off8 | 1, already assigned | 32 valid second-byte patterns; 224 remain reserved | 3; retain 4-byte off16 fallback |
-| Far call and far return | Assigned CALLF `$54` packed target and RETF `$55` | 2, already assigned | Four-byte PC/CS return frame; same mode/map | 5 for call; 1 for return |
-| TST.B / TST.W | Assigned `$1A $40–$43` byte tags; word OR-self alias | 0 | Four assigned tags; no new word tags | 2 |
-| TSTI.B / TSTI.W | Assigned `$1A $44–$4B` plus immediate | 0 | Eight assigned tags, four per width | 3 for byte; 4 for word |
-| Immediate-count shifts/rotates | Assigned `$1A $60–$87`, count8 | 0 | Forty assigned secondary tags: five operations × two widths × four destinations; count 0–16 | 3 |
+INC/DEC default to word; byte forms alias ADDI.B/SUBI.B #1 with no new tags.
+Word flags exactly match immediate arithmetic. SEXT accepts only one B0 operand
+and sets word NZ while preserving CVIE. Post-increment d=1 stores, z=1 selects
+byte, rr selects B0 and pp B1; all high six base bits reject immediately at byte
+three. It excludes B1 values, overrides/displacements, MOVU and all MMIO.
+[Narrative semantics and fault ordering](ISA.md#ram-only-b1-post-increment-mov)
+are normative. CALLR default relaxation shares branch layout iteration; .S/.W
+force widths, numeric targets are pinned long when needed, and explicit CALLR
+never silently becomes absolute CALL. Disassembly preserves the selected width.
 
-The assigned user-access descriptor uses configured uaccess_segment and therefore
-needs no ordinary CS/DS selector bit. B0-only test support is accepted;
-expansion to other banks requires separate evidence. TST.W aliases `OR rd,rd`,
-consuming no separate word-test tags.
-
-For B1 simm6, 64 a=0 second-byte tags accept 256 descriptors each, giving
-16,384 three-byte forms. The a=1 disp16 forms require zero reserved high descriptor
-bits. Both forms share the existing primary and secondary table.
-
-### Cumulative capacity projection
-
-This projection charges whole blocks, including intentionally reserved holes.
-“Remaining” means capacity uncommitted by this planning scenario. Actual assigned
-primary counts are 111/145; MOVU, CALLF/RETF, compact SP and fifteen rel8 values are already charged. Control/context
-accesses have consumed 32 existing-secondary positions but no primary values.
-
-| Step | Primary charge at this step | Primary capacity remaining | Secondary capacity remaining outside budgeted blocks |
-|---|---:|---:|---|
-| Current working map, including all three compact families | — | 145 | `$1F`: 163; `$1A`: 176; `$27`: 192; `$28`: 224 |
-| Hold reserved rel8 condition `$6F` | 1 held, not assigned | 144 | Unchanged |
-| Hold remaining reserved control/context block positions | 0 | **144** | `$1F`: **131**; `$1A`: **176**; `$27`: **192**; `$28`: **224** |
-| Existing commands, MOVU, devices, B1/SP compact, branches, far calls, tests and shifts | 0, already charged | 144 | Unchanged |
-
-All three reviewed compact families are assigned. No additional primary for SP
-remains to be charged: it brings the actual map to 111 assigned / 145 unassigned,
-with 144 unassigned values outside held $6F. Twelve test tags and forty immediate-
-shift tags are assigned under `$1A` (52 total). Any future register-to-pointer
-proposal requires a separate measured adoption and allocation review.
-
-Likewise, the control block's 32 reserved-bit patterns are unavailable to other
-families in this scenario even though they remain illegal, so its 64-position
-budget exceeds its 32 matching tags. Neither reserved-hole count is a new grant.
-
-Block shape fits as well as total counts: the primary map contains whole free
-16-value blocks and disjoint single-byte slots; `$1F` had two completely free
-aligned 64-value blocks before control assignment. `$80–$BF` now contains its
-32 assigned access tags and 32 reserved held positions, while `$C0–$FF` remains a
-completely free 64-value block. `$1A` has ample disjoint free eight-value groups.
-Choose the remaining actual nonoverlapping tags only at assignment review. All
-four existing
-escape primaries and their assigned tags are preserved; MOVU adds the fifth
-and compact SP the sixth escape. The 192 reserved MOVU descriptor values remain available only to a
-reviewed future extension of that family. The small `$10` and
-`$15` spare regions need not be consumed to make the planned families fit.
-
-### Encoding tradeoffs and allocation policy
-
-| Design choice | Primary / secondary cost | Length effect and implementation tradeoff |
-|---|---|---|
-| Retain assigned immediate ALU primaries | Existing 48 primary values | `.B` 2 / `.W` 3 bytes, direct opcode register selection; no migration or compatibility change |
-| Hypothetical immediate ALU under one new descriptor family | One primary plus descriptor space, instead of the existing 48 | `.B` 3 / `.W` 4 bytes; another descriptor decode and incompatible replacement of assigned bytes. Not proposed for adoption |
-| Protected access under existing escape | Zero new primaries; 64-position secondary budget | Three bytes and a new selector namespace; preserves base GETX/SETX. A new primary escape could also be three bytes but would spend one primary unnecessarily at present |
-| User access under a new primary | One primary and explicit descriptors | Three/five bytes; keeps common transfers compact and avoids consuming 64 existing secondary tags. Moving the same full descriptor behind another escape adds a byte unless the layout is redesigned |
-| Compact branch/SP addressing | Sixteen primary positions for branches, one for SP; B1 reuses fields | Two-byte branches and three-byte short memory forms. Escaping a rel8 branch would make it three bytes, equal to current rel16 size; an extra SP escape byte would erase its size saving |
-| Far call/return under dedicated primaries | Two primaries | Five-byte packed-target call and one-byte return. Existing-escape tags would save both primaries but make these forms six/two bytes and trigger the longer-instruction audit for the call. A three-byte target alternative must be reviewed separately |
-| Assigned TST and TSTI | Twelve secondary tags total, zero new primaries | TST.B is two bytes; TSTI is three/four; TST.W aliases OR. Dedicated primaries are unnecessary for the measured sequences |
-| TST.W as an assembler alias | Zero new space for the word form | Two-byte `OR rd,rd` already preserves the register and C/V/I/E; byte testing still needs distinct semantics |
-| Immediate-count shifts/rotates under an existing escape | Forty secondary tags, zero primary values | Three-byte byte/word forms with a count byte; forty dedicated primary values would save one byte per form but reduce projected primary capacity from 144 to 104. Counts through 16 cannot use an unqualified four-bit count field |
-
-The alternative of dedicated primaries for both test families plus a new control
-escape would raise the additional primary charge from 17 to 34, leaving 127
-positions outside budgeted blocks. Even that option fits without reclaiming
-`$80–$AF`. The preferred costing scenario conserves primaries for rare controls
-and tests while retaining density for immediate ALU, compact addressing, and
-far control flow. TST/TSTI now use the reviewed twelve-tag assignment; the
-remaining candidate allocations remain design recommendations.
-
-Update this budget after each reviewed assignment. Reconsider immediate ALU
-allocation only if a concrete remaining family cannot fit after considering
-escape reuse, descriptor reuse, and the documented length tradeoffs. Audit
-all matching values and reserved fields before publishing any selected layout;
-selectors, exception numbers, and MMIO addresses have their own namespaces and
-must not be counted as primary opcode consumption.
+No reserved control patterns,
+scalar selectors or exception vectors are consumed. Lengths stay within five
+bytes; all older assignments and compact displacement forms remain unchanged.
+Deferred ENTRY/PROC, pointer arithmetic, multi-register stack and indirect calls
+reserve no numeric values. Reconsider immediate ALU allocation only if a reviewed
+future family cannot fit after escape/descriptor reuse and length tradeoffs.
 
 ## Unassigned encoding proposals
 
 The B1, rel8 and SP compact proposals have moved to the assigned layouts and
 embedded payload. The six byte/word immediate ALU families are assigned.
-No further compact opcode family is granted by this section. Post-increment and
-checked register-to-pointer arithmetic remain unassigned. The latter was
+No further compact opcode family is granted by this section. Checked register-to-pointer arithmetic remains unassigned. The latter was
 [measured and deferred](ISA_EXAMPLES.md#checked-register-to-pointer-arithmetic-decision)
 as described in Appendix B of ISA.md.
 The unsigned B0-to-B1 study notation `ADDP.R` has no numeric encoding. Its two-byte
@@ -468,8 +475,8 @@ cost model needs sixteen tags in an existing escape (zero new primaries/tables);
 a three-byte alternative needs one tag plus a descriptor with sixteen legal
 source/destination combinations and reserved-bit validation. Neither alternative
 selects or reserves a slot, adds DP, changes schema 5, or changes any assigned
-encoding. The primary budget remains 111 assigned / 145 unassigned and `$1A`
-remains 80 assigned / 176 unassigned tags.
+encoding. The primary budget is 113 assigned / 143 unassigned and `$1A`
+has 172 assigned / 84 unassigned tags.
 
 Extended context/control access has moved to the assigned tables above. The
 eight-bit third-byte index is a separate encoding, separate from the base
@@ -505,12 +512,20 @@ Unassigned forms remain illegal.
 
 ### Kernel context and control-access cost
 
-A twenty-word spill/reload uses forty GETX/SETX transfers, 120 instruction bytes
-before memory operations. This is a static size calculation, not a benchmark.
+A scalar twenty-word spill/reload uses forty GETX/SETX transfers, 120 instruction
+bytes before memory operations. CTX/1 STX/LDX replace the two complete transfer
+sequences with four instruction bytes; scalar bootstrap/repair and scheduler
+ownership, validation, backup and recovery costs remain. This is a static size
+comparison, not a benchmark.
 Use the [current guest/kernel measurements](ISA_EXAMPLES.md#current-workload-measurements)
 for executed code and schedules. Canonical user-access selectors may be rematerialized
 under the documented ABI. CPU controls use GETC/SETC; timer/PIC use ordinary MOV
-to MMIO. No bulk context-transfer or alternate device-control opcode is assigned.
+to MMIO. LDC/STC descriptor images are assigned above. CTX/1 LDX/STX are assigned; no alternate device-control opcode is assigned.
+
+The [descriptor transfer contract](ISA.md#atomic-descriptor-image-transfers) and
+[context transfer contract](ISA.md#atomic-writable-exception-context-transfers)
+specify fixed images, ordered faults and bounded RAM staging. Descriptor images are
+assigned at `$1F $C0–$C7`; writable CTX/1 uses `$C8–$CF` for LDX/STX.
 
 ## Instruction-length audit
 
@@ -605,7 +620,7 @@ records the current implementation assumptions.
 
 The register-bank arrays include B0–B3, all eight general registers, and the saved exception context. `context_writable_indices` excludes read-only cause/address/service metadata. `csr_masks` contains the defined and software-writable masks, with E derived from active context rather than an ordinary software-writable flag.
 
-Aliases expand to real instructions before encoding. INCP/DECP accept r4–r7 or DP; they do not target SP. ADJSP is a separate checked stack operation with no transfer-size suffix. PULL, PUSH.W, POP.W, and PULL.W expand to the corresponding word PUSH/POP instruction as listed in JSON. General-register self-MOV expands to NOP. TRAP #imm8 expands to SWI #imm8 without changing its operand range or length. TST/TST.W use `same_b0_register_operands` to expand one B0 operand into both operands of OR. No alias may silently consume an accumulator temporary. Existing MOV suffix and operand-class rules remain defined by ISA.md.
+Aliases expand to real instructions before encoding. INC.B/DEC.B expand to ADDI.B/SUBI.B #1 on B0, preserving byte result/flag rules. INCP/DECP accept r4–r7 or DP; they do not target SP. ADJSP is a separate checked stack operation with no transfer-size suffix. PULL, PUSH.W, POP.W, and PULL.W expand to the corresponding word PUSH/POP instruction as listed in JSON. General-register self-MOV expands to NOP. TRAP #imm8 expands to SWI #imm8 without changing its operand range or length. TST/TST.W use `same_b0_register_operands` to expand one B0 operand into both operands of OR. No alias may silently consume an accumulator temporary. Existing MOV suffix and operand-class rules remain defined by ISA.md.
 
 `flags_written` lists ordinary updates; conditional CSR destinations use `special_effects`. For immediate shifts/rotates the count-zero special effect overrides N/Z/C and destination writes. Their state constraint `min`/`max` gives inclusive count bounds, checked after full fetch. IRET restores the saved image, pops one protected frame and derives E from remaining depth. SETX edits saved state and does not immediately update live flags. SWI likewise lists no ordinary calculated flags; its special effects perform exception entry, which preserves NZCV, clears I, and activates E. Its xpc is the following instruction, unlike the instruction-start PC saved for a fault.
 
@@ -2280,6 +2295,48 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "mask": 255
           },
           "dispatch": "ext28"
+        },
+        {
+          "id": "callr_short",
+          "mnemonic": "CALLR",
+          "match": {
+            "value": 86,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "semantic": "call_near_relative"
+        },
+        {
+          "id": "callr",
+          "mnemonic": "CALLR",
+          "match": {
+            "value": 87,
+            "mask": 255
+          },
+          "length": 3,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 2,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "semantic": "call_near_relative"
         }
       ]
     },
@@ -3958,6 +4015,178 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             }
           ],
           "semantic": "store_memory"
+        },
+        {
+          "id": "mov_post_load_8",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 68,
+            "mask": 252
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "base",
+              "byte": 2,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "load_memory_post_increment",
+          "transfer_bits": 8,
+          "address": {
+            "base": "B1",
+            "segment": "ds",
+            "stack_bounds": false,
+            "post_increment": 1,
+            "ram_only": true
+          },
+          "encoding_checks": [
+            {
+              "byte": 2,
+              "mask": 252,
+              "equals": 0
+            }
+          ]
+        },
+        {
+          "id": "mov_post_load_16",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 64,
+            "mask": 252
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "base",
+              "byte": 2,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "load_memory_post_increment",
+          "transfer_bits": 16,
+          "address": {
+            "base": "B1",
+            "segment": "ds",
+            "stack_bounds": false,
+            "post_increment": 2,
+            "ram_only": true
+          },
+          "encoding_checks": [
+            {
+              "byte": 2,
+              "mask": 252,
+              "equals": 0
+            }
+          ]
+        },
+        {
+          "id": "mov_post_store_8",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 76,
+            "mask": 252
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "base",
+              "byte": 2,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "store_memory_post_increment",
+          "transfer_bits": 8,
+          "address": {
+            "base": "B1",
+            "segment": "ds",
+            "stack_bounds": false,
+            "post_increment": 1,
+            "ram_only": true
+          },
+          "encoding_checks": [
+            {
+              "byte": 2,
+              "mask": 252,
+              "equals": 0
+            }
+          ]
+        },
+        {
+          "id": "mov_post_store_16",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 72,
+            "mask": 252
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "base",
+              "byte": 2,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "store_memory_post_increment",
+          "transfer_bits": 16,
+          "address": {
+            "base": "B1",
+            "segment": "ds",
+            "stack_bounds": false,
+            "post_increment": 2,
+            "ram_only": true
+          },
+          "encoding_checks": [
+            {
+              "byte": 2,
+              "mask": 252,
+              "equals": 0
+            }
+          ]
         }
       ]
     },
@@ -4600,6 +4829,239 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
               "fault": "invalid_state"
             }
           ]
+        },
+        {
+          "id": "mul",
+          "mnemonic": "MUL",
+          "match": {
+            "mask": 240,
+            "value": 160
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 2,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z"
+          ],
+          "semantic": "integer_mul"
+        },
+        {
+          "id": "divu",
+          "mnemonic": "DIVU",
+          "match": {
+            "mask": 240,
+            "value": 176
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 2,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z"
+          ],
+          "semantic": "integer_divu"
+        },
+        {
+          "id": "divs",
+          "mnemonic": "DIVS",
+          "match": {
+            "mask": 240,
+            "value": 192
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 2,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z"
+          ],
+          "semantic": "integer_divs"
+        },
+        {
+          "id": "modu",
+          "mnemonic": "MODU",
+          "match": {
+            "mask": 240,
+            "value": 208
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 2,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z"
+          ],
+          "semantic": "integer_modu"
+        },
+        {
+          "id": "mods",
+          "mnemonic": "MODS",
+          "match": {
+            "mask": 240,
+            "value": 224
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 2,
+              "width": 2,
+              "bank": "B0"
+            },
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z"
+          ],
+          "semantic": "integer_mods"
+        },
+        {
+          "id": "inc_16",
+          "mnemonic": "INC",
+          "match": {
+            "value": 240,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z",
+            "C",
+            "V"
+          ],
+          "semantic": "unit_arithmetic",
+          "operation_bits": 16
+        },
+        {
+          "id": "dec_16",
+          "mnemonic": "DEC",
+          "match": {
+            "value": 244,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z",
+            "C",
+            "V"
+          ],
+          "semantic": "unit_arithmetic",
+          "operation_bits": 16
+        },
+        {
+          "id": "sext",
+          "mnemonic": "SEXT",
+          "match": {
+            "value": 248,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B0"
+            }
+          ],
+          "operands": [],
+          "flags_written": [
+            "N",
+            "Z"
+          ],
+          "semantic": "sign_extend_byte"
         }
       ]
     },
@@ -5051,6 +5513,90 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "flags_written": [],
           "semantic": "setc"
+        },
+        {
+          "id": "ldc_desc",
+          "mnemonic": "LDC",
+          "match": {
+            "value": 192,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "base",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "load_descriptor_image"
+        },
+        {
+          "id": "stc_desc",
+          "mnemonic": "STC",
+          "match": {
+            "value": 196,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "base",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "store_descriptor_image"
+        },
+        {
+          "id": "ldx_ctx",
+          "mnemonic": "LDX",
+          "match": {
+            "value": 200,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "base",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "load_context_image"
+        },
+        {
+          "id": "stx_ctx",
+          "mnemonic": "STX",
+          "match": {
+            "value": 204,
+            "mask": 252
+          },
+          "length": 2,
+          "fields": [
+            {
+              "name": "base",
+              "byte": 1,
+              "lsb": 0,
+              "width": 2,
+              "bank": "B1"
+            }
+          ],
+          "operands": [],
+          "flags_written": [],
+          "semantic": "store_context_image"
         }
       ]
     },
@@ -5620,6 +6166,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
       "mnemonic": "TST.W",
       "expands_to": "OR",
       "same_b0_register_operands": true
+    },
+    {
+      "mnemonic": "INC.B",
+      "expands_to": "ADDI.B",
+      "immediate": 1
+    },
+    {
+      "mnemonic": "DEC.B",
+      "expands_to": "SUBI.B",
+      "immediate": 1
     }
   ],
   "assembler_rules": {

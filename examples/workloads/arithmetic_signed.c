@@ -1,0 +1,1 @@
+i16 results[6];u16 main(){i16 a=-100;i16 b=7;i16 c=-7;results[0]=a/b;results[1]=a%b;results[2]=a/c;results[3]=a%c;results[4]=100/c;results[5]=100%c;return results[0]==-14 && results[1]==-2 && results[2]==14 && results[3]==-2 && results[4]==-14 && results[5]==2;}

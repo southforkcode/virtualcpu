@@ -11,6 +11,10 @@ software ABIs and current measurements. The authoritative
 [implementation record](doc/ISA.md#implementation-status-and-remaining-work)
 distinguishes implemented behavior, executed scenarios and remaining software work.
 
+The [bootable bulk example](doc/ISA_EXAMPLES.md#bootable-bulk-transfer-and-nested-retry)
+exercises LDC/STC and LDX/STX with nested fault recovery. Current compiler and
+workload measurements are described in the examples reference.
+
 ## Build and validate
 
 Requires CMake, a C++17 compiler and Python 3.10+ with its standard library.
@@ -20,6 +24,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ctest --test-dir build --output-on-failure
 build/kernel_demo
+build/bulk_demo
+build/bulk_demo console-v1
 build/console_demo --record build/terminal.jsonl
 build/console_demo --replay build/terminal.jsonl
 ```
@@ -75,7 +81,8 @@ python3 tools/generate_example_listings.py --check
 
 Tools support labels, aliases and source/destination operand order, with no linker,
 directives or executable header. B1 displacements -32..31 and SP offsets 0..255
-use compact encodings. Branches relax to rel8; `.S`/`.W` force their widths.
+use compact encodings. Branches and near CALLR relax jointly to rel8;
+`.S`/`.W` force their widths.
 Disassembly retains branch width but canonicalizes memory assembly to its shortest
 form; retain raw images when noncanonical encodings must be preserved. Seven decoder
 tables and ordered reserved-byte checks are generated from the embedded JSON.
@@ -83,9 +90,11 @@ tables and ordered reserved-byte checks are generated from the embedded JSON.
 ## Compiler and measurements
 
 [SmallC](tools/smallc.py) compiles the [documented C-like subset and ABI](doc/ISA_EXAMPLES.md#smallc-compiler-and-executable-workloads)
-through the production assembler. Its 27 compiled workloads and three assembly
-references include arrays/structures, near DS/SS pointers, checked failures,
-preempted calls and a generated blocking terminal.
+through the production assembler. Its 44 compiled workloads and three assembly
+references include native multiply/divide/remainder, arrays/structures, near DS/SS
+pointers, checked failures, precise arithmetic faults, compact unit arithmetic,
+sign extension, relative internal calls, preempted calls and a
+generated blocking terminal.
 
 ```sh
 python3 tools/smallc.py examples/workloads/struct_array.c --assembly build/struct_array.asm --artifact build/struct_array.json

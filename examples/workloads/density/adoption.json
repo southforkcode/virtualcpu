@@ -1,0 +1,26 @@
+{
+  "scope": "Current working ISA workload comparison criteria; instruction assignments remain in the normative ISA references.",
+  "common": [
+    "Pass full Release suite and fresh per-binary recorded input replay; preserve precise faults and MMIO commit rules.",
+    "Compare equal input/output, signedness, overflow, flags, clobbers, checked pointers and fault recovery. State any narrower contract.",
+    "Include unique shared helper code once, per-site wrappers, records/constants, stack, checks and register pressure.",
+    "Report code, data, total footprint, retirements, actual RAM/device traffic, stack and fault/IRQ opportunities separately.",
+    "No host speed claim from retirement counts. Benchmark instrumented and uninstrumented execution separately; report host/configuration and variance.",
+    "Publish every regression and unmeasured property. A deferral is a valid decision; synthetic-only savings cannot establish application benefit."
+  ],
+  "families": {
+    "descriptor": "Reduce measured safe shared-library install/replacement/readback cost, including self-contained records, ownership/leases and recovery wrappers. Require all-or-none validation tests before adoption.",
+    "context": "Reduce complete twenty-word spill/reload sequences including scheduler validation, map leases and nested-fault recovery. Immutable frame authority must remain inaccessible; bound longest atomic work.",
+    "entry_proc": "Require repeated hot structured transfers beyond existing shared control helpers; defer when diagnostics or one-time boot dominate.",
+    "multiply": "Beat optimized current-ISA helper and constant strength reduction on ordinary signed/unsigned low-word cases. Do not substitute truncated MUL for checked scale overflow; justify wide forms independently.",
+    "divide_mod": "Cover / and % independently, signed truncation toward zero, dividend-sign remainder, zero and MIN/-1 errors. Include decimal conversion and runtime helper costs; native arithmetic failures use cause 8.",
+    "inc_dec": "Byte immediates already cost two bytes: require benefit beyond mnemonic aliases. Word forms must save bytes across measured loops with identical NZCV behavior.",
+    "post_increment": "Measure byte and word loads/stores against hoisted constants and checked ADDP. Include boundary/fault-order differences and lost interrupt opportunities, rather than assuming fusion is semantically interchangeable.",
+    "lea_pointer": "Retain checked arithmetic/object/width guards and pointer-study constraints. Require measured array/structure benefit after allocator and constant optimizations.",
+    "call_relative_indirect": "Measure direct and trampoline calls, relocation and callee-save/stack ABI costs. Relative call must improve relocatable code; indirect CALL must beat a shared safe JS trampoline.",
+    "pushm_popm": "Count only ABI-required live saves after leaf/liveness optimization, masks, wrappers and stack bounds. Require precise all-or-none failure and bounded atomic latency.",
+    "neg_sext": "Compare existing subtraction and shift-based extension with explicit flag/clobber contracts; require occurrence-weighted savings in real callers.",
+    "memory_immediate_zero_compare": "Compare hoisted/shared constants and existing TST aliases; include memory fault/MMIO rules and constant-pool bytes.",
+    "bswap_clz_ctz": "Defer until representative workloads show demand and a useful net win over helpers."
+  }
+}

@@ -16,7 +16,7 @@ void descriptor(VirtualCPU& c,unsigned seg,std::array<uint16_t,7> d,unsigned map
 }
 VirtualCPU machine() {
     VirtualCPU c(0x40000,MachineProfile::ConsoleV1);
-    for (unsigned v=0;v<8;++v) c.load(v*4,{0,uint8_t(v?3:1),0,0});
+    for (unsigned v=0;v<exception_vector_count;++v) c.load(v*4,{0,uint8_t(v?3:1),0,0});
     c.load(0x300,{0x1f,0x12}); c.reset();
     {
         for (unsigned i=0;i<5;++i) setc(c,0x10+i,i<3?0:0xfffe);

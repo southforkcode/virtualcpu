@@ -5,7 +5,7 @@ MOV.B #0,r2
 loop:
 MOV.B [r4],r0
 ADD r0,r2
-SUBI.W #1,r1
+DEC.W r1
 BEQ done
 ADDP #1,r4
 BRA loop

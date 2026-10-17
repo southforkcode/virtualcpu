@@ -98,8 +98,8 @@ class PointerEvaluation(unittest.TestCase):
             for dst in range(4):
                 data = assemble(f'ADD r{src},r{dst}')[0][1]
                 self.assertEqual((decode(data)[0]['semantic'], len(data)), ('add', 2))
-        self.assertEqual(sum(e is not None for e in TABLES['primary']), 111)
-        self.assertEqual(sum(e is None for e in TABLES['ext1a']), 176)
+        self.assertEqual(sum(e is not None for e in TABLES['primary']), 113)
+        self.assertEqual(sum(e is None for e in TABLES['ext1a']), 84)
 
 
 if __name__ == '__main__':

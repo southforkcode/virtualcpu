@@ -130,12 +130,12 @@ def evaluate(build):
             site['baseline_region_retired'] = sum(counts.get(pc, 0) for pc in site['baseline_pcs'])
             if site['operation'] == 'add':
                 site['models'] = {str(size): site_model(site, size) for size in (2, 3)}
-                if not a.get('guard') and any(counts.get(pc, 0) != site['executions'] for pc in site['baseline_pcs']):
+                if not a.get('guard') and not a.get('arithmetic_fault') and any(counts.get(pc, 0) != site['executions'] for pc in site['baseline_pcs']):
                     raise ValueError(f'Nonuniform successful region: {name}/{site["pc"]}')
         models = {}
         guarded_models = {}
         # Failed programs are measurements, never treated as equivalent fast paths.
-        if a['variant'] == 'compiled' and not a.get('guard'):
+        if a['variant'] == 'compiled' and not a.get('guard') and not a.get('arithmetic_fault'):
             for size in (2, 3):
                 totals = Counter()
                 guarded_totals = Counter()
@@ -152,10 +152,10 @@ def evaluate(build):
                         guarded_totals[key] += guarded[key]*s['executions']
                 models[str(size)] = dict(totals)
                 guarded_models[str(size)] = dict(guarded_totals)
-        rows.append(dict(name=name, variant=a['variant'], expected_guard=a.get('guard', 0),
+        rows.append(dict(name=name, variant=a['variant'], expected_guard=a.get('guard', 0), expected_arithmetic_fault=a.get('arithmetic_fault'),
                          measured={k: run[k] for k in invariant_metrics if k not in ('events', 'replay_header')},
                          sites=sites, models=models, guarded_models=guarded_models))
-    successful = [r for r in rows if r['variant'] == 'compiled' and not r['expected_guard']]
+    successful = [r for r in rows if r['variant'] == 'compiled' and not r['expected_guard'] and not r['expected_arithmetic_fault']]
     all_compiled = [r for r in rows if r['variant'] == 'compiled']
     models = {}
     guarded_models = {}

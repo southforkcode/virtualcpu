@@ -15,12 +15,26 @@ void VirtualCPU::increment(std::string& value) {
     value.insert(value.begin(),'1');
 }
 unsigned VirtualCPU::backing(uint32_t a) const {
+    if (measure_traffic_) ++traffic_.backing_probes;
     if (a>=0xff0000 && a<0x1000000) return a<0xff0100?2:0;
     return a<ram_.size() && installed_[a]?1:0;
 }
 std::array<uint16_t,7> VirtualCPU::descriptor(uint16_t map,uint16_t segment) const {
+    if (measure_traffic_) ++traffic_.descriptor_lookups;
     auto found=protected_->descriptors.find(uint16_t((map<<8)|segment));
     return found==protected_->descriptors.end()?std::array<uint16_t,7>{}:found->second;
+}
+void VirtualCPU::validate_descriptor(uint16_t map,uint16_t segment,const std::array<uint16_t,7>& d) const {
+    auto invalid=[&] { throw Fault{Cause::Invalid,physical_hint(regs_.cs,regs_.pc)}; };
+    if (map>255 || segment>255 || d[0]>255 || (d[1]&~0x1ff) || d[4]>1) invalid();
+    if (!(d[1]&P)) {
+        if (std::any_of(d.begin(),d.end(),[](auto v){return v!=0;})) invalid();
+    } else {
+        if (upper(d)>65536 || d[2]>upper(d)) invalid();
+        if ((map==0 && (d[1]&0x38)) || ((d[1]&DEVICE) && (d[1]&0x13c))) invalid();
+        if (!(d[1]&STACK)) { if (d[5] || d[6]) invalid(); }
+        else if (!(d[2]<=d[5] && d[5]<=d[6] && d[6]<=upper(d))) invalid();
+    }
 }
 std::optional<uint32_t> VirtualCPU::physical_hint(uint16_t segment,int64_t offset) const {
     if (offset<0 || offset>65535) return {};
@@ -187,16 +201,7 @@ std::function<void()> VirtualCPU::stage_control(uint8_t id,uint16_t value) {
     if (value<1 || value>8) invalid();
     if ((value==3 || value==4) && p.desc_map==0) invalid();
     auto d=p.shadow; uint16_t key=uint16_t((p.desc_map<<8)|p.desc_segment);
-    if (value==1) {
-        if (d[0]>255 || (d[1]&~0x1ff) || d[4]>1) invalid();
-        if (!(d[1]&P)) { if (std::any_of(d.begin(),d.end(),[](auto v){return v!=0;})) invalid(); }
-        else {
-            if (upper(d)>65536 || d[2]>upper(d)) invalid();
-            if ((p.desc_map==0 && (d[1]&0x38)) || ((d[1]&DEVICE) && (d[1]&0x13c))) invalid();
-            if (!(d[1]&STACK)) { if (d[5] || d[6]) invalid(); }
-            else if (!(d[2]<=d[5] && d[5]<=d[6] && d[6]<=upper(d))) invalid();
-        }
-    }
+    if (value==1) validate_descriptor(p.desc_map,p.desc_segment,d);
     if (value==5) validate_entry(p.entry_shadow);
     if (value==7) {
         if ((regs_.flags&32) || p.frames.size()!=1 || p.frames.back().origin!=Mode::Kernel || p.frames.back().bootstrap || !p.entry_configured) invalid();

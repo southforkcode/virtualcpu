@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SmallC 0.1: checked near-pointer C-like baseline; production ISA assembler only."""
+"""SmallC 0.3: checked near pointers and native integer arithmetic; production assembler only."""
 from __future__ import annotations
 import argparse
 from dataclasses import dataclass
@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from isa import assemble, decode, parse
 
-VERSION = '0.1.0'
+VERSION = '0.3.1'
 def integer(text):return int(text,16 if text.startswith('0x') else 10)
 
 SCALARS = {'u8': (1, False), 'i8': (1, True), 'u16': (2, False), 'i16': (2, True), 'void': (0, False)}
@@ -51,7 +51,7 @@ class Node:
 class Parser:
     def __init__(self, source):
         self.tokens=[]; pos=0; line=1
-        pattern=re.compile(r'\s+|//[^\n]*|/\*[\s\S]*?\*/|0x[0-9a-fA-F]+|[0-9]+|[A-Za-z_]\w*|==|!=|<=|>=|&&|\|\||<<|>>|->|[{}()\[\];,.+\-*/&|^~!=<>]')
+        pattern=re.compile(r'\s+|//[^\n]*|/\*[\s\S]*?\*/|0x[0-9a-fA-F]+|[0-9]+|[A-Za-z_]\w*|==|!=|<=|>=|&&|\|\||<<|>>|->|[{}()\[\];,.+\-*/%&|^~!=<>]')
         while pos<len(source):
             match=pattern.match(source,pos)
             require(match is not None, f'line {line}: unsupported token near {source[pos:pos+12]!r}')
@@ -138,7 +138,7 @@ class Parser:
         if self.starts_type():return self.declaration()
         if self.eat(';'):return Node('block')
         e=self.expr();self.need(';');return Node('expr',(e,))
-    PRECEDENCE={'=':1,'||':2,'&&':3,'|':4,'^':5,'&':6,'==':7,'!=':7,'<':8,'>':8,'<=':8,'>=':8,'<<':9,'>>':9,'+':10,'-':10,'*':11}
+    PRECEDENCE={'=':1,'||':2,'&&':3,'|':4,'^':5,'&':6,'==':7,'!=':7,'<':8,'>':8,'<=':8,'>=':8,'<<':9,'>>':9,'+':10,'-':10,'*':11,'/':11,'%':11}
     def expr(self, minimum=1):
         lhs=self.unary()
         while self.peek() in self.PRECEDENCE and self.PRECEDENCE[self.peek()]>=minimum:
@@ -216,9 +216,20 @@ class Compiler:
             return narrow(self.constant(child),target)
         unary={'unary-':lambda x:-x,'unary+':lambda x:x,'unary~':lambda x:~x,'unary!':lambda x:int(not x)}
         if node.op in unary:return narrow(unary[node.op](self.constant(node.args[0])),self.type_of(node))
-        require(node.op in ('+','-','*','<<','>>','|','&','^'),'Expected constant expression')
+        require(node.op in ('+','-','*','/','%','<<','>>','|','&','^'),'Expected constant expression')
         require(not any(self.type_of(child).pointer for child in node.args),'Static pointer arithmetic is unsupported; form checked pointers at runtime')
         a,b=map(self.constant,node.args)
+        if node.op in ('/','%'):
+            # Apply the same promoted 16-bit domain as runtime instructions.
+            unsigned=self.type_of(node)==U16
+            def operand(value):
+                value&=65535
+                return value if unsigned or value<32768 else value-65536
+            a,b=operand(a),operand(b)
+            require(b!=0,'Constant division by zero')
+            require(unsigned or (a,b)!=(-32768,-1),'Constant signed division overflow')
+            quotient=abs(a)//abs(b)*(-1 if (a<0)!=(b<0) else 1)
+            return narrow(quotient if node.op=='/' else a-quotient*b,self.type_of(node))
         if node.op in ('<<','>>'):require(0<=b<=16,'Shift count must be a constant 0..16')
         value={'+':lambda:a+b,'-':lambda:a-b,'*':lambda:a*b,'<<':lambda:a<<b,'>>':lambda:a>>b,'|':lambda:a|b,'&':lambda:a&b,'^':lambda:a^b}[node.op]()
         return narrow(value,self.type_of(node))
@@ -276,10 +287,11 @@ class Compiler:
             require(source==target or target.pointer and n is not None and n.op=='num' and n.args[0]==0,'Pointer types/address spaces need an explicit compatible cast')
         self.normalize(target)
     def normalize(self,t):
-        if t.name in ('u8','i8'):
-            self.emit('ANDI.B #255,r0')
-            if t.signed:
-                done=self.fresh('sign');self.emit('CMPI.W #128,r0');self.emit('BCC '+done);self.emit('ORI.W #65280,r0');self.label(done)
+        # SmallC flags are scratch at conversion boundaries; signed byte values
+        # use word NZ and preserve CV, unlike the former branch normalization.
+        if t.name=='i8':self.emit('SEXT r0')
+        elif t.name=='u8':self.emit('ANDI.B #255,r0')
+
     def pointer_offset(self,base,index,subtract=False,bound=None):
         pt=self.type_of(base);it=self.type_of(index);require(pt.pointer and it.scalar and not it.pointer,'Pointer offset needs an integer')
         old=self.context_kind;self.context_kind='address';self.expression(base);self.push();self.expression(index,checked=True);self.pop('r1')
@@ -290,8 +302,9 @@ class Compiler:
             self.emit(f'CMPI.W #{65535//size},r0','guard');self.guard('BHI',3)
             if size&(size-1)==0:self.emit(f'SHLI.W #{size.bit_length()-1},r0','address')
             else:
-                self.emit('MOV r0,r2','address');self.emit('MOV.W #0,r0','address');self.emit(f'MOV.W #{size},r3','address');loop=self.fresh('scale');self.label(loop)
-                self.emit('ADD r2,r0','address');self.emit('SUBI.W #1,r3','address');self.emit('BNE '+loop,'address')
+                # The preceding bound proves this constant scale fits. MUL's
+                # preserved C/V are never interpreted as an overflow result.
+                self.emit(f'MOV.W #{size},r2','address');self.emit('MUL r2,r0','address')
         if subtract:self.emit('SUB r0,r1','address');self.guard('BCC',4);self.emit('MOV r1,r0','address')
         else:self.emit('ADD r1,r0','address');self.guard('BCS',4)
         self.context_kind=old
@@ -366,18 +379,26 @@ class Compiler:
             count=self.constant(a[1]);require(0<=count<=16,'Shift count must be a constant 0..16');self.expression(a[0],checked)
             if checked and op=='<<' and count:self.emit(f'CMPI.W #{65535>>count},r0','guard');self.guard('BHI',3)
             self.emit(f'{"SHLI" if op=="<<" else "SARI" if lt.signed else "SHRI"}.W #{count},r0');return t
+        if not checked and op in ('+','-') and a[1].op=='num' and a[1].args[0]==1:
+            self.expression(a[0]);self.emit(('INC' if op=='+' else 'DEC')+'.W r0');return t
+        if not checked and op in ('*','/','%') and a[1].op=='num':
+            value=a[1].args[0]
+            if value and not value&(value-1) and (op=='*' or t==U16):
+                self.expression(a[0]);count=value.bit_length()-1
+                self.emit(f'SHLI.W #{count},r0' if op=='*' else f'SHRI.W #{count},r0' if op=='/' else f'ANDI.W #{value-1},r0')
+                return t
         self.expression(a[0],checked);self.push();self.expression(a[1],checked);self.pop('r1')
         if op in ('==','!=','<','>','<=','>='):
             self.emit('CMP r0,r1');yes=self.fresh('true');end=self.fresh('compare');signed=not(lt==U16 or rt==U16 or lt.pointer)
             branch={'==':'BEQ','!=':'BNE','<':'BLT' if signed else 'BCC','>':'BGT' if signed else 'BHI','<=':'BLE' if signed else 'BLS','>=':'BGE' if signed else 'BCS'}[op]
             self.emit(branch+' '+yes);self.emit('MOV.W #0,r0');self.emit('BRA '+end);self.label(yes);self.emit('MOV.W #1,r0');self.label(end);return t
         if op=='*':
+            if not checked:self.emit('MUL r1,r0');return t
             loop=self.fresh('multiply');end=self.fresh('mulend')
-            if checked:
-                self.emit('MOV r0,r2','address');self.emit('MOV.W #0,r0','address');self.label(loop);self.emit('TST.W r2','guard');self.emit('BEQ '+end,'guard');self.emit('ADD r1,r0','address');self.guard('BCS',3);self.emit('SUBI.W #1,r2','address');self.emit('BRA '+loop,'address')
-            else:
-                skip=self.fresh('mulskip');self.emit('MOV.W #0,r3');self.emit('MOV.W #16,r2');self.label(loop);self.emit('SHRI.W #1,r0');self.emit('BCC '+skip);self.emit('ADD r1,r3');self.label(skip);self.emit('SHLI.W #1,r1');self.emit('SUBI.W #1,r2');self.emit('BNE '+loop);self.emit('MOV r3,r0')
+            self.emit('MOV r0,r2','address');self.emit('MOV.W #0,r0','address');self.label(loop);self.emit('TST.W r2','guard');self.emit('BEQ '+end,'guard');self.emit('ADD r1,r0','address');self.guard('BCS',3);self.emit('DEC.W r2','address');self.emit('BRA '+loop,'address')
             self.label(end);return t
+        if op in ('/','%'):
+            self.emit(('DIV' if op=='/' else 'MOD')+('U' if t==U16 else 'S')+' r0,r1');self.emit('MOV r1,r0');return t
         require(op in ('+','-','&','|','^'),'Unsupported binary '+op);self.emit({'+' :'ADD','-':'SUB','&':'AND','|':'OR','^':'XOR'}[op]+' r0,r1')
         if checked and op in ('+','-'):self.guard('BCS' if op=='+' else 'BCC',3)
         self.emit('MOV r1,r0');return t
@@ -394,7 +415,7 @@ class Compiler:
             return U16
         result,params,_=self.functions[name];require(len(args)==len(params),'Wrong argument count for '+name)
         for arg,(_,pt) in reversed(list(zip(args,params))):st=self.expression(arg);self.convert(st,pt,arg);self.push(kind='call')
-        self.emit('CALL '+self.function_label(name),'call')
+        self.emit('CALLR '+self.function_label(name),'call')
         if args:self.emit(f'ADJSP #{2*len(args)}','call');self.depth-=2*len(args)
         return result
     def declarations(self,n):
@@ -430,7 +451,7 @@ class Compiler:
     def compile(self):
         if not self.library:
             require('main' in self.functions and not self.functions['main'][1],'main() required')
-            self.emit('CALL '+self.function_label('main'),'call');self.emit('MOV.W r0,[12032]');self.emit('SWI #1','call');self.emit('HALT')
+            self.emit('CALLR '+self.function_label('main'),'call');self.emit('MOV.W r0,[12032]');self.emit('SWI #1','call');self.emit('HALT')
         for name,(result,params,body) in self.functions.items():
             require(result.scalar,'Aggregate/void returns unsupported');require(not(result.pointer and result.space=='ss'),'Returning SS pointers is unsupported');require(body.op=='block','Function body required')
             self.current=name;self.vars=dict(self.global_vars);size=0

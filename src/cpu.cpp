@@ -1,5 +1,6 @@
 #include "cpu.hpp"
 #include "decode_table.hpp"
+#include "memory_transaction.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -36,12 +37,14 @@ void VirtualCPU::load(uint32_t start, const std::vector<uint8_t>& bytes) {
 uint8_t VirtualCPU::peek(uint32_t a) const { return ram_.at(a); }
 uint8_t VirtualCPU::read(uint32_t a) const {
     if (a>=ram_.size() || !installed_[a]) throw Fault{Cause::Memory,a};
+    if (measure_traffic_) ++traffic_.ram_reads;
     return ram_[a];
 }
 uint32_t VirtualCPU::access(uint16_t segment, int64_t offset, unsigned width, Access type, Phase phase, bool mmio) const {
     return translate(mode()==Mode::Kernel?0:protected_->controls[0],mode(),segment,offset,width,type,phase,mode()==Mode::Kernel?2:1,mmio);
 }
 void VirtualCPU::reset() {
+    traffic_={};
     regs_=Registers{}; context_.reset(); diagnostic_.reset();
     state_=ExecutionState::Running;
     if (has_reset_) increment(run_);
@@ -60,6 +63,7 @@ void VirtualCPU::fault(Fault f) {
     enter_protected(f,regs_.pc);
 }
 bool VirtualCPU::step() {
+    traffic_={};
     if (state_==ExecutionState::TerminalDoubleFault || state_==ExecutionState::TerminalResetFault) return false;
     auto& p=*protected_; p.pending|=p.levels;
     uint16_t eligible=p.pending&p.enable&uint16_t(~p.in_service);
@@ -89,6 +93,7 @@ void VirtualCPU::execute() {
     auto fetch=[&] {
         auto a=access(old.cs,int64_t(old.pc)+fetched,1,Access::Fetch,Phase::Fetch);
         b[fetched]=read(a);
+        if (measure_traffic_) ++traffic_.fetch_reads;
         return b[fetched++];
     };
     // Fetch/decode never advances live PC. Reserved descriptors fail as read.
@@ -112,6 +117,10 @@ void VirtualCPU::execute() {
             if ((x>=0x20 && x<=0x34) || (x>=0x80 && x<=0x87)) privilege=5;
             if ((x>=0x40 && x<=0x50) || (x>=0x90 && x<=0x97)) privilege=6;
             if (x>=0xa0 && x<=0xa7) privilege=8; if (x>=0xb0 && x<=0xb7) privilege=9;
+            if (x>=0xc0 && x<=0xc3) privilege=9;
+            if (x>=0xc4 && x<=0xc7) privilege=8;
+            if (x>=0xc8 && x<=0xcb) privilege=6;
+            if (x>=0xcc && x<=0xcf) privilege=5;
         }
         if (privilege) { Fault f{Cause::Privilege,ia}; f.privilege=uint16_t(privilege); throw f; }
     }
@@ -121,12 +130,17 @@ void VirtualCPU::execute() {
     int64_t next=unsigned(old.pc)+e.length, target=next;
     uint16_t target_segment=old.cs;
     bool explicit_target=false, halt=false, returning=false;
-    std::optional<std::pair<uint32_t,uint32_t>> write;
-    unsigned write_width=0;
+    detail::RamWriteBatch writes;
     std::optional<std::pair<unsigned,uint16_t>> edit;
     std::function<void()> action;
-    auto read_word=[&](uint32_t a) { return uint16_t(ram_[a]|uint16_t(ram_[a+1])<<8); };
-    auto stage_store=[&](uint32_t a,uint32_t value,unsigned width) { write=std::make_pair(a,value); write_width=width; };
+    // Prepare sparse-map insertion storage before any architectural commit.
+    std::map<uint16_t,std::array<uint16_t,7>> descriptor_node;
+    auto descriptor_target=protected_->descriptors.end();
+    std::optional<std::array<uint16_t,7>> descriptor_value;
+    std::optional<ProtectedFrame> frame_candidate;
+    auto read_word=[&](uint32_t a) { if (measure_traffic_) traffic_.ram_reads+=2; return uint16_t(ram_[a]|uint16_t(ram_[a+1])<<8); };
+    auto read_byte=[&](uint32_t a) { if (measure_traffic_) ++traffic_.ram_reads; return ram_[a]; };
+    auto stage_store=[&](uint32_t a,uint32_t value,unsigned width) { writes.stage(a,value,width); };
     auto jump=[&](int64_t value) { target=value; explicit_target=true; };
     auto arith=[&](unsigned kind,uint16_t a,uint16_t v) {
         bool sub=kind==5 || kind==7 || kind==8;
@@ -211,7 +225,17 @@ void VirtualCPU::execute() {
         unsigned x=b[1],reg=(x>>2)&7,width=(x&32)?1:2; bool store=x&128;
         int64_t offset=old.r[4+(b[2]&3)]+((x&64)?signed16(b[3]|uint32_t(b[4])<<8):0);
         auto a=translate(protected_->controls[1],Mode::User,protected_->controls[2],offset,width,store?Access::Write:Access::Read,Phase::Operand,3);
-        if (store) stage_store(a,old.r[reg],width); else s.r[reg]=width==1?ram_[a]:read_word(a);
+        if (store) stage_store(a,old.r[reg],width); else s.r[reg]=width==1?read_byte(a):read_word(a);
+    } else if (op==0x15 && b[1]>=0x40 && b[1]<=0x4f) {
+        unsigned x=b[1],reg=x&3,base=4+(b[2]&3),width=(x&4)?1:2;
+        bool store=x&8; auto offset=old.r[base];
+        unsigned advanced=unsigned(offset)+width;
+        if (advanced>65535) invalid();
+        // RAM-only preflight occurs before any read/store or pointer update.
+        auto a=access(old.ds,offset,width,store?Access::Write:Access::Read,Phase::Operand,false);
+        s.r[base]=uint16_t(advanced);
+        if (store) stage_store(a,old.r[reg],width);
+        else action=[&,a,width,reg]{s.r[reg]=width==1?read_byte(a):read_word(a);};
     } else if (op==0x15 || op==0x28) {
         unsigned x=b[1], reg=x&7, width=(x&8)?1:2, mode=(x>>4)&3;
         bool store=x&64;
@@ -231,17 +255,37 @@ void VirtualCPU::execute() {
                     if (width!=2 || (a&1)) throw Fault{Cause::Memory,a};
                     if (store) {
                         auto commit=stage_mmio(a,old.r[reg]); action=[this,commit]{commit();++protected_->device_commits;};
-                    } else { s.r[reg]=mmio_read(a); action=[this,a]{commit_mmio_read(a);++protected_->device_commits;}; }
+                    } else { s.r[reg]=mmio_read(a); if (measure_traffic_) traffic_.mmio_samples+=2; action=[this,a]{commit_mmio_read(a);++protected_->device_commits;}; }
                 } catch (const Fault& f) {
                     throw memory_failure(this->mode()==Mode::Kernel?0:protected_->controls[0],this->mode(),segment,offset,width,
                         store?Access::Write:Access::Read,Phase::Operand,this->mode()==Mode::Kernel?2:1,7,f.address);
                 }
             } else if (store) stage_store(a,old.r[reg],width);
-            else s.r[reg]=width==1?ram_[a]:read_word(a);
+            else s.r[reg]=width==1?read_byte(a):read_word(a);
         }
+    } else if (op==0x1a && b[1]>=0xa0 && b[1]<=0xef) {
+        unsigned kind=(b[1]-0xa0)>>4,src=(b[1]>>2)&3,dst=b[1]&3;
+        uint16_t a=old.r[dst],v=old.r[src],result;
+        if (kind==0) result=uint16_t(uint32_t(a)*uint32_t(v));
+        else {
+            // Check the guest quotient domain before host division/modulo.
+            // MODS shares DIVS's MIN/-1 fault even though its remainder fits.
+            bool is_signed=kind==2 || kind==4;
+            if (!v || (is_signed && a==0x8000 && v==0xffff)) throw Fault{Cause::Arithmetic,ia};
+            if (is_signed) {
+                auto dividend=signed16(a),divisor=signed16(v);
+                result=uint16_t(kind==2?dividend/divisor:dividend%divisor);
+            } else result=uint16_t(kind==1?a/v:a%v);
+        }
+        s.r[dst]=result;s.flags=(old.flags&~3)|nz(result);
     } else if (op==0x1a) {
         unsigned x=b[1], dst=x&3; auto a=old.r[dst];
-        if (x>=0x60 && x<=0x87) {
+        if (x>=0xf0 && x<=0xf7) {
+            s.r[dst]=arith(x<0xf4?6:7,a,1);
+        } else if (x>=0xf8 && x<=0xfb) {
+            auto value=uint16_t(signed8(uint8_t(a)));
+            s.r[dst]=value;s.flags=(old.flags&~3)|nz(value);
+        } else if (x>=0x60 && x<=0x87) {
             unsigned count=b[2], kind=(x-0x60)>>3, bits=(x&4)?16:8;
             if (count>16) invalid();
             if (count) {
@@ -276,6 +320,15 @@ void VirtualCPU::execute() {
         std::array<bool,15> conditions{z,!z,c,!c,n,!n,v,!v,c&&!z,!c||z,n==v,n!=v,!z&&n==v,z||n!=v,true};
         unsigned condition=op-(op>=0x60?0x60:0x40);
         if (conditions[condition]) jump(next+(op>=0x60?signed8(b[1]):signed16(operand)));
+    } else if (op==0x56 || op==0x57) {
+        int64_t offset=int64_t(old.sp)-2;
+        check_stack(offset,old.sp);
+        auto a=access(old.ss,offset,2,Access::Write);
+        stage_store(a,uint16_t(next),2);s.sp=uint16_t(offset);
+        if (next>65535) {
+            throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
+        }
+        jump(next+(op==0x56?signed8(b[1]):signed16(operand)));
     } else if (op==0x52) jump(operand);
     else if (op==0x53) {
         if (operand&0xff000000) invalid();
@@ -302,7 +355,50 @@ void VirtualCPU::execute() {
         s.cs=target_segment;
     } else if (op==0x1f) {
         unsigned x=b[1];
-        if (x>=0x80 && x<=0xb7) {
+        if (x>=0xc0 && x<=0xc7) {
+            using detail::KernelImageTransfer;
+            using detail::descriptor_image_words;
+            const auto base=old.r[4+(x&3)];
+            if (x<0xc4) {
+                auto source=KernelImageTransfer::preflight(*this,old.ds,base,descriptor_image_words,Access::Read);
+                auto image=KernelImageTransfer::snapshot(*this,source);
+                std::array<uint16_t,7> d;std::copy_n(image.words.begin()+2,7,d.begin());
+                validate_descriptor(image.words[0],image.words[1],d);
+                uint16_t key=uint16_t((image.words[0]<<8)|image.words[1]);
+                descriptor_target=protected_->descriptors.find(key);
+                if (descriptor_target==protected_->descriptors.end()) descriptor_node.emplace(key,d);
+                else descriptor_value=d;
+            } else {
+                KernelImageTransfer::check_range(*this,old.ds,base,descriptor_image_words,Access::Write);
+                auto header=KernelImageTransfer::snapshot(*this,KernelImageTransfer::preflight(*this,old.ds,base,2,Access::Read));
+                auto destination=KernelImageTransfer::preflight(*this,old.ds,base,descriptor_image_words,Access::Write);
+                if (header.words[0]>255 || header.words[1]>255) invalid();
+                auto d=descriptor(header.words[0],header.words[1]);
+                detail::WordImage image;image.count=descriptor_image_words;
+                image.words[0]=header.words[0];image.words[1]=header.words[1];
+                std::copy(d.begin(),d.end(),image.words.begin()+2);
+                KernelImageTransfer::stage(writes,destination,image);
+            }
+        } else if (x>=0xc8 && x<=0xcf) {
+            if (protected_->frames.empty()) invalid();
+            using detail::KernelImageTransfer;
+            const auto base=old.r[4+(x&3)];
+            if (x<0xcc) {
+                auto image=KernelImageTransfer::snapshot(*this,KernelImageTransfer::preflight(*this,old.ds,base,detail::context_image_words,Access::Read));
+                auto candidate=protected_->frames.back();
+                std::copy_n(image.words.begin(),17,candidate.words.begin());
+                std::copy_n(image.words.begin()+17,3,candidate.controls.begin());
+                validate_return(candidate,candidate.origin==Mode::User || candidate.bootstrap?Mode::User:Mode::Kernel);
+                frame_candidate=candidate;
+            } else {
+                auto destination=KernelImageTransfer::preflight(*this,old.ds,base,detail::context_image_words,Access::Write);
+                detail::WordImage image;image.count=detail::context_image_words;
+                const auto& frame=protected_->frames.back();
+                std::copy_n(frame.words.begin(),17,image.words.begin());
+                std::copy(frame.controls.begin(),frame.controls.end(),image.words.begin()+17);
+                KernelImageTransfer::stage(writes,destination,image);
+            }
+        } else if (x>=0x80 && x<=0xb7) {
             if (x>=0xb0) action=stage_control(b[2],old.r[x&7]);
             else if (x>=0xa0) s.r[x&7]=read_control(b[2]);
             else if (x>=0x90) { if (!context_) invalid(); edit=std::make_pair(unsigned(b[2]),old.r[x&7]); }
@@ -337,7 +433,11 @@ void VirtualCPU::execute() {
     if (explicit_target) access(target_segment,target,1,Access::Fetch,Phase::ControlTarget);
     s.pc=uint16_t(target);
     // All guest-visible effects below are infallible ordinary-RAM commits.
-    if (write) for (unsigned i=0;i<write_width;++i) ram_[write->first+i]=uint8_t(write->second>>(8*i));
+    writes.commit(ram_);
+    if (measure_traffic_) traffic_.ram_writes+=writes.size();
+    if (descriptor_value) descriptor_target->second=*descriptor_value;
+    if (!descriptor_node.empty()) protected_->descriptors.insert(descriptor_node.extract(descriptor_node.begin()));
+    if (frame_candidate) { protected_->frames.back()=*frame_candidate; context_=frame_candidate->words; }
     if (edit) write_context(edit->first,edit->second);
     if (action) action();
     regs_=s;

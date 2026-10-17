@@ -10,9 +10,11 @@
 #include <vector>
 
 namespace vcpu {
+namespace detail { class KernelImageTransfer; }
 enum class MachineProfile { MinimalV1, ConsoleV1 };
 enum class ExecutionState { Running, Halted, TerminalResetFault, TerminalDoubleFault };
-enum class Cause : uint16_t { Illegal=1, Memory=2, Stack=3, Invalid=4, IRQ=5, Trap=6, Privilege=7 };
+enum class Cause : uint16_t { Illegal=1, Memory=2, Stack=3, Invalid=4, IRQ=5, Trap=6, Privilege=7, Arithmetic=8 };
+inline constexpr unsigned exception_vector_count=9; // Reset plus assigned causes 1–8.
 enum class Mode : uint16_t { User=0, Kernel=1 };
 enum class Access : uint16_t { None=0, Fetch=1, Read=2, Write=3 };
 enum class Phase : uint16_t { None=0, Fetch=1, ResultPC=3, Operand=2, ControlTarget=4, ReturnState=5, ReturnTarget=6 };
@@ -78,6 +80,14 @@ struct ProtectedState {
     uint64_t device_commits=0;
     std::vector<uint8_t> console_rx, console_tx;
 };
+// Optional host diagnostics, never part of guest state or replay artifacts.
+// Counts actual RAM byte reads/writes, including reads by faulting instructions
+// and exception-vector reads. Fetch is a subset of reads. MMIO samples are
+// pre-commit reads; device_commits remains the transaction authority.
+struct StepTraffic {
+    uint64_t ram_reads=0, ram_writes=0, fetch_reads=0, mmio_samples=0;
+    uint64_t backing_probes=0, descriptor_lookups=0;
+};
 // Host loader/debugger mutations occur between steps, on the execution thread.
 class VirtualCPU {
 public:
@@ -109,7 +119,12 @@ public:
     void reset();
     // One instruction or interrupt entry. False means no progress.
     bool step();
+    void measure_traffic(bool enabled) { measure_traffic_=enabled; traffic_={}; }
+    const StepTraffic& step_traffic() const { return traffic_; }
 private:
+    friend class detail::KernelImageTransfer;
+    bool measure_traffic_=false;
+    mutable StepTraffic traffic_{};
     MachineProfile profile_;
     Registers regs_;
     std::optional<Context> context_;
@@ -125,6 +140,7 @@ private:
                     Phase phase=Phase::Operand, bool mmio=false) const;
     unsigned backing(uint32_t address) const;
     std::array<uint16_t,7> descriptor(uint16_t map, uint16_t segment) const;
+    void validate_descriptor(uint16_t map, uint16_t segment, const std::array<uint16_t,7>& words) const;
     std::optional<uint32_t> physical_hint(uint16_t segment, int64_t offset) const;
     Fault memory_failure(uint16_t map, Mode mode, uint16_t segment, int64_t offset, unsigned width,
                          Access access, Phase phase, unsigned origin, unsigned reason,
