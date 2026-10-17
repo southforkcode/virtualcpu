@@ -3,138 +3,98 @@
 A deterministic 16-bit CPU with four B0 accumulators, four B1 address/storage
 registers, protected process maps, checked stacks, and precise instruction faults.
 
-The [architecture reference manual](doc/ISA.md) defines the working ISA.
-[ISA_ENCODING.md](doc/ISA_ENCODING.md) contains its sole machine-readable encoding
-source. [ISA.md Appendix C](doc/ISA.md#review-feedback-and-completion) records completed
-review phases and conformance, including protected execution, devices and tools.
+The **working ISA is the sole target** for the emulator, tools, examples and tests.
+[ISA.md](doc/ISA.md) defines architecture and conformance;
+[ISA_ENCODING.md](doc/ISA_ENCODING.md) contains the sole machine-readable encoding
+source (schema 5); [ISA_EXAMPLES.md](doc/ISA_EXAMPLES.md) contains runnable examples,
+software ABIs and current measurements. The authoritative
+[implementation record](doc/ISA.md#implementation-status-and-remaining-work)
+distinguishes implemented behavior, executed scenarios and remaining software work.
 
-Select `--revision working` in the tools or `Revision::Working` in the CPU API
-for the protected machine. It implements all currently assigned instructions:
-
-- Byte/word ADDI, SUBI, CMPI, ANDI, ORI and XORI at the preserved `$80–$AF` encodings.
-- GETC/SETC descriptor, map, kernel-entry and backing-query controls.
-- Forty-two readable saved-context words, twenty editable words, eight nested
-  frames, privilege exceptions, and validated U/K returns.
-- MOVU byte/word user-buffer transfers with precise faults and nested recovery.
-- TST/TSTI, far CALLF/RETF, and immediate byte/word shifts and rotates with counts 0–16.
-- The `minimal-v1` PIC/timer window at `$FF0000–$FF00FF`, deterministic instruction
-  time, explicit idle advancement, and transactional host events/replay validation.
-
-Legacy modes `0.4` and `0.5` retain their existing encoding and execution contracts,
-including the single saved context and source-less IRQ API. New encodings remain
-unavailable in those modes. TST/TST.W retain their OR-self alias in every mode.
-Metadata schema **3** requires runtime gating and early allowed-selector checks;
-older consumers must reject it instead of ignoring those checks.
-
-## Build
+## Build and validate
 
 Requires CMake, a C++17 compiler and Python 3.10+ with its standard library.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --build build -j4
 ctest --test-dir build --output-on-failure
 build/kernel_demo
+build/console_demo --record build/terminal.jsonl
+build/console_demo --replay build/terminal.jsonl
 ```
 
-The demo runs guest assembly from [examples/kernel_boot.asm](examples/kernel_boot.asm)
-and six companion images. The production assembler generates their native test
-fixtures during the build. Guest code configures protected entry, publishes maps
-7/8, bootstraps user mode, switches between private processes on timer interrupts,
-and recovers from bad user pointers through a nested memory handler. Both processes
-use the same virtual selectors/offsets and distinct physical frames. No host register
-mutation or context switching occurs after reset. Expected output:
+The kernel demo executes guest setup, two private user processes, four timer
+switches and two nested user-copy fault fixups. The console demo blocks A on read,
+runs B, consumes recorded input, wakes A and emits `HELLO\n`. CTest checks state at
+every boundary and final RAM under replay, including cancellation and fault paths.
+These are pinned integration fixtures; a production kernel needs dynamic allocation
+and general process lifecycle policies.
 
-```text
-PASS: 5783 boundaries, 4 timer switches, 2 recovered user-copy faults
+For an AddressSanitizer/UndefinedBehaviorSanitizer build:
+
+```sh
+cmake -S . -B build-sanitized -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build build-sanitized -j4
+ctest --test-dir build-sanitized --output-on-failure
 ```
-
-This is a pinned kernel integration fixture. It demonstrates the assigned hardware
-interfaces; a production kernel still needs its own allocation, locking, map lease,
-copy-loop, scheduler validation, and process lifecycle policies. See
-[ISA_EXAMPLES.md](doc/ISA_EXAMPLES.md#executable-protected-kernel-demo) for placement
-and recovery details.
 
 ## Library and tools
 
-[src/cpu.hpp](src/cpu.hpp) exposes the CPU library. Load code, data and packed
-vectors with `load`, configure installed backing with `map`, then call `reset`
-to boot through vector 0. `step` performs one instruction or eligible interrupt
-entry; it returns false for a halted/terminal poll that makes no progress.
-All host calls run on the CPU thread between steps.
+[src/cpu.hpp](src/cpu.hpp) exposes `VirtualCPU(ram_bytes, profile)`. RAM defaults
+to 16 MiB and the profile to `MachineProfile::MinimalV1`; select `ConsoleV1` for
+console input/output. Load vectors/code/data with `load`, configure installed
+backing with `map`, then `reset`. Reset boots K with identity map 0; guest code
+must configure protected exception entry and publish user maps before using them.
+Physical frame `$FF` contains MMIO followed by holes.
 
-RAM defaults to 16 MiB; a smaller constructor and `map(..., false)` allow holes.
-Working mode always reserves physical frame `$FF`: its first 256 bytes are MMIO
-and the remainder holes. Reset map 0 supplies identity kernel descriptors; user
-maps and active kernel-entry configuration start empty. Guest controls must
-configure entry before exceptions can successfully enter a handler.
+`step` executes an instruction or eligible interrupt entry and returns false for
+a halted/terminal poll. Host calls run on the CPU thread between steps. Mutable
+registers, `load`, `map` and `peek` are trusted loader/debugger interfaces outside
+recorded execution. `context()` exposes the top saved base words and
+`protected_state()` exposes read-only controls, maps, frames and devices.
 
-`peek`, `load`, `map` and mutable registers are trusted loader/debugger interfaces.
-They bypass guest restrictions and are outside deterministic replay when used
-without recording. `context()` exposes the top legacy-compatible saved words;
-`protected_state()` exposes read-only maps, frames, controls and device state.
-`diagnostic()` and `terminal_diagnostic()` preserve fault/entry diagnostics.
+Submit source-specific typed events with `apply_boundary_events` or JSONL with
+`apply_boundary_json`. Minimal-v1 connects edge source 1 and level source 2;
+console-v1 owns source 2 for RX-ready. Guest timer source 0 is deterministic.
+`run()`, `boundary()` and `next_sequence()` are nonwrapping decimal strings.
+Host errors return `HostError` without partial input commits or guest exceptions.
 
-In working mode, submit typed `BoundaryEvent` batches using `apply_boundary_events`
-or UTF-8 JSONL using `apply_boundary_json`. External edge source 1 and level source
-2 are connected; timer source 0 comes from guest timer configuration. The legacy
-`request_irq()` API throws in working mode. `run()`, `boundary()` and
-`next_sequence()` return canonical decimal strings; boundary ordinals do not wrap.
-Host errors return `HostError` without creating guest exceptions or partially
-applying a batch.
+`replay_header()` binds exact RAM/backing artifacts at reset boundary zero.
+Verify it before stepping and deliver events at their recorded run/boundary.
+`advance_idle_to` records virtual-time advancement; wall-clock time never advances
+the timer. See the [host contract](doc/ISA.md#deterministic-host-events-and-replay).
 
-A replay driver loads the exact 16 MiB RAM/backing artifacts, resets the CPU,
-and calls `verify_replay_header` before stepping. Verification checks exact bytes,
-profile, lowercase SHA-256 digests, current run and reset boundary. The driver owns
-future-input queues: deliver all records for the current run/boundary before
-`step`; discard old-run read-ahead after reset and verify the next run header.
-`advance_idle_to(target)` submits a recorded idle event with the current sequence.
-No wall clock advances the timer. The exact JSONL contract and error priorities
-are in [ISA.md](doc/ISA.md#deterministic-host-events-and-replay).
-
-The build derives six decoder tables and early byte validators from the embedded
-JSON. C++ applies ordered validation and stages registers, context, controls,
-RAM and MMIO commits until all selected checks pass.
-
-Assemble/disassemble flat images with an explicit revision and optional 16-bit
-origin (default `$0100`):
+The assembler defaults to the working ISA and origin `$0100`:
 
 ```sh
-python3 tools/isa.py assemble examples/kernel_boot.asm --revision working -o build/kernel_boot.bin
-python3 tools/isa.py disassemble build/kernel_boot.bin --revision working
+python3 tools/isa.py assemble examples/fibonacci.asm -o build/fibonacci.bin
+python3 tools/isa.py disassemble build/fibonacci.bin
+python3 tools/generate_example_listings.py --check
 ```
 
-The tools support labels, source/destination operand order, named/numeric selectors,
-and documented aliases. They provide no linker, directives, macros or executable
-header. Vectors and placement belong to the loader. Disassembly canonicalizes long
-B1/MOVU forms with zero displacement to shorter assembly; retain raw images when
-noncanonical bytes must be preserved.
+Tools support labels, aliases and source/destination operand order, with no linker,
+directives or executable header. B1 displacements -32..31 and SP offsets 0..255
+use compact encodings. Branches relax to rel8; `.S`/`.W` force their widths.
+Disassembly retains branch width but canonicalizes memory assembly to its shortest
+form; retain raw images when noncanonical encodings must be preserved. Seven decoder
+tables and ordered reserved-byte checks are generated from the embedded JSON.
 
-## Validation
+## Compiler and measurements
 
-Three CTest suites pass in Release and AddressSanitizer/UndefinedBehaviorSanitizer
-builds:
+[SmallC](tools/smallc.py) compiles the [documented C-like subset and ABI](doc/ISA_EXAMPLES.md#smallc-compiler-and-executable-workloads)
+through the production assembler. Its 27 compiled workloads and three assembly
+references include arrays/structures, near DS/SS pointers, checked failures,
+preempted calls and a generated blocking terminal.
 
-- `cpu_conformance`: **749,338 assertions** covering the retained ALU, decode,
-  memory/stack, branch, trap/IRQ, published programs, exhaustive byte tests,
-  immediate shifts/rotates and mixed near/far call behavior. Legacy modes remain
-  isolated; working fixtures use configured entry and typed interrupts.
-- `protected_conformance`: **3,173,471 checks** covering all 48 immediate ALU
-  opcodes and every byte operand pair, word boundary values, flags/branches,
-  controls/maps, selector endpoints, descriptor rejection, publication/invalidation,
-  all context words and privilege classes, depths 1–8, invalid returns/rollback,
-  terminal entry stages, MOVU forms/aliases and fault reasons, atomic stores,
-  U far calls and stack policy, PIC arbitration/nesting/ACK, MMIO preflight,
-  timer snapshots/deadlines/overflow, idle/reset, JSON event rollback and replay
-  artifact hashes, deterministic boundary state, and the guest kernel demo.
-- `toolchain`: **12 parameterized tests** checking the ledger against all six
-  tables, metadata validation, exact new encodings and round trips, all registers
-  and selectors, immediate/displacement endpoints, reserved/truncated forms,
-  compatibility isolation, 184 retained published encodings, far/shift examples,
-  and seven guest kernel images.
+```sh
+python3 tools/smallc.py examples/workloads/struct_array.c --assembly build/struct_array.asm --artifact build/struct_array.json
+python3 tools/measure_workloads.py --build build --output build/compiler/measurements.json
+python3 tools/evaluate_pointer_arithmetic.py --build build --output build/compiler/pointer-evaluation.json
+```
 
-Counts include parameterized checks and are not a coverage percentage or a formal
-proof of every conformance checklist item. [ISA.md Appendix C](doc/ISA.md#architectural-conformance-requirements)
-separates required acceptance behavior from the evidence actually run. The ISA
-retains candidate review status; unassigned compact forms and additional devices
-are outside the implemented machine profile.
+[Current measurements](examples/workloads/measurements.json) record code hashes,
+actual retirements, stack use, moves/spills, addressing distributions and schedules.
+The [pointer study](examples/workloads/pointer_study.json) keeps modeled costs
+separate from executed results. Register-to-pointer arithmetic remains unassigned
+pending register-allocation evidence and a defined overflow-error ABI.

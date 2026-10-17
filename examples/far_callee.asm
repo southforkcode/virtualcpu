@@ -1,4 +1,4 @@
-; Callee: CS=1, origin $0200; assemble separately with --revision working.
+; Callee: CS=1, origin $0200; assemble separately at origin $0200.
 ; A near helper uses RET; this far entry returns with RETF.
 CALL helper
 RETF

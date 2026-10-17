@@ -9,7 +9,7 @@ std::vector<uint8_t> image(const char* path) {
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 int main() {
-    vcpu::VirtualCPU cpu(vcpu::Revision::Working);
+    vcpu::VirtualCPU cpu;
     cpu.load(0, {0, 1, 0, 0});
     cpu.load(0x100, image("build/far_call.bin"));
     cpu.load(0x10200, image("build/far_callee.bin"));

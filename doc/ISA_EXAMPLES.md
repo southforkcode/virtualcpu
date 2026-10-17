@@ -1,144 +1,152 @@
 # ISA worked examples
 
-Documentation: [Architecture and conformance](ISA.md) · [Encoding metadata and allocation](ISA_ENCODING.md).
+Documentation: [Architecture and conformance](ISA.md) · [Encoding metadata](ISA_ENCODING.md).
 
-The first ten examples use the implemented instruction subset of the [working ISA](ISA.md). Each is an independent image at CS:$0100 with CS=DS=SS=0, SB=0, SP=ST=$FFFE, I=0, and segment zero installed as RAM. Set reset vector 0 to `00 01 00 00` when booting one of those images. Other vectors are unused on successful runs. Addresses and bytes are hexadecimal.
+All examples target the working ISA. Byte listings are generated from the linked
+assembly sources using the production assembler, including short branches,
+compact B1/SP operands and current immediate instructions. Each of the first ten
+images starts at CS:$0100, CS=DS=SS=0, SB=0, SP=ST=$FFFE, I=0 with installed RAM.
+Reset vector 0 is `00 01 00 00`. Successful standalone examples need no exception
+entry; configure protected entry before expecting recoverable faults or SWI.
+The [implementation record](ISA.md#implementation-status-and-remaining-work)
+distinguishes executed fixtures from illustrative source.
 
-The software-trap example specifies its own setup. The C++ CPU executes the ten worked programs and syscall caller/handler with their stated results; the assembler reproduces all 184 baseline published instruction encodings. See [README.md](../README.md#validation) for current validation. The density evidence below records completed design studies; the protected-kernel demo has its own executable images. [ISA.md Appendix C](ISA.md#architectural-conformance-requirements) contains the validation contract, and [ISA_ENCODING.md](ISA_ENCODING.md) contains the machine-readable table.
+The successful paths below are executed by `cpu_conformance`:
 
-## Contents
+| Source | Retired instructions | Result |
+|---|---:|---|
+| fibonacci.asm | 57 | F(10) = 55 |
+| array_sum_dp.asm | 33 | Sum = 15 |
+| insertion_sort.asm | 142 | -3, -1, 0, 2, 3 |
+| byte_copy.asm | 42 | hello plus NUL copied |
+| factorial.asm | 92 | 5! = 120 |
+| multiword.asm | 9 | $00040000 |
+| segmented_copy.asm | 48 | Private-segment string and CS constant copied |
+| segment_end.asm | 21 | Sum = 12, final pointer $FFFF |
+| stack_locals.asm | 22 | Frame/callee-preserved values restored |
+| dispatch.asm | 6 | Indirect target stores $BEEF |
 
-- [Worked programs](#fibonacci) and [software traps](#software-trap-and-system-call-example)
-- [Far calls](#far-call-and-near-helper) and [immediate shifts/rotates](#immediate-shift-and-rotate-examples)
-- [Code-density evidence](#code-density-evidence) and [calling conventions](#calling-convention-evaluation)
-- [Protected kernel demo](#executable-protected-kernel-demo)
-- [Test-instruction review and measurements](#test-instruction-review-and-measurements)
+[The B1 array-sum variant](../examples/array_sum.asm) uses the same input/output
+contract with a B1 pointer instead of DP. Every standalone assembly source is
+checked with the current assembler/disassembler, including its selected origin.
 
 ## Fibonacci
 
-No data initialization. Compute F(10); DS:$2000 must contain `$0037` (55). r4 holds the constant one and moves through r3 for subtraction.
+No data initialization. Compute F(10); DS:$2000 must contain `$0037` (55). SUBI.W decrements the loop count without a constant register.
 
+[Source](../examples/fibonacci.asm).
+
+<!-- EXAMPLE fibonacci.asm 256 -->
 ```text
 0100  15 08 00       MOV.B #0,r0
 0103  15 09 01       MOV.B #1,r1
 0106  15 0A 0A       MOV.B #10,r2
-0109  15 0C 01       MOV.B #1,r4
-010C  10 2A          OR r2,r2
-010E  40 0B 00       BEQ done
+0109  10 2A          TST.W r2
+010B  60 09          BEQ done
                      loop:
-0111  13             MOV r0,r3
-0112  14             MOV r1,r0
-0113  10 6D          ADD r3,r1
-0115  10 A3          MOV r4,r3
-0117  10 7E          SUB r3,r2
-0119  41 F5 FF       BNE loop
+010D  13             MOV r0,r3
+010E  14             MOV r1,r0
+010F  10 6D          ADD r3,r1
+0111  8E 01 00       SUBI.W #1,r2
+0114  61 F7          BNE loop
                      done:
-011C  15 50 00 20    MOV.W r0,[$2000]
-0120  01             HALT
+0116  15 50 00 20    MOV.W r0,[$2000]
+011A  01             HALT
 ```
-
-Code size: 33 bytes. Successful run: 68 instructions.
 
 ## Array traversal and summation
 
 Initialize DS:$2000 with words `[1, 2, 3, 4, 5]`. DS:$2100 must contain `$000F` (15). DP ends at `$200A`. The pre-loop zero test also supports an empty array.
 
+[Source](../examples/array_sum_dp.asm).
+
+<!-- EXAMPLE array_sum_dp.asm 256 -->
 ```text
 0100  15 08 00       MOV.B #0,r0
 0103  15 09 05       MOV.B #5,r1
-0106  15 0B 02       MOV.B #2,r3
-0109  15 0C 01       MOV.B #1,r4
-010C  15 02 00 20    MOV.W #$2000,r2
-0110  10 9A          MOV r2,dp
-0112  10 25          OR r1,r1
-0114  40 13 00       BEQ done
+0106  15 02 00 20    MOV.W #$2000,r2
+010A  10 9A          MOV r2,dp
+010C  10 25          TST.W r1
+010E  60 0D          BEQ done
                      loop:
-0117  15 22 00 00    MOV.W [dp+0],r2
-011B  10 68          ADD r2,r0
-011D  10 8A          MOV dp,r2
-011F  10 6E          ADD r3,r2
-0121  10 9A          MOV r2,dp
-0123  10 A2          MOV r4,r2
-0125  10 79          SUB r2,r1
-0127  41 ED FF       BNE loop
+0110  15 22 00 00    MOV.W [dp+0],r2
+0114  10 68          ADD r2,r0
+0116  24 02          ADDP #2,dp
+0118  8D 01 00       SUBI.W #1,r1
+011B  61 F3          BNE loop
                      done:
-012A  15 50 00 21    MOV.W r0,[$2100]
-012E  01             HALT
+011D  15 50 00 21    MOV.W r0,[$2100]
+0121  01             HALT
 ```
-
-Code size: 47 bytes. Successful run: 50 instructions.
 
 ## Signed insertion sort
 
-Initialize DS:$2000 with words `[3, -1, 2, -3, 0]`. The five words must become `[-3, -1, 0, 2, 3]`. r4 holds the current address, r5 the exclusive end, r6 the base, and r7 the word stride. Negative DP displacement loads the previous element; BLE compares signed values.
+Initialize DS:$2000 with words `[3, -1, 2, -3, 0]`. The five words must become `[-3, -1, 0, 2, 3]`. r4 holds the current address, r5 the exclusive end, r6 the base. Checked ADDP advances the outer pointer. Negative DP displacement loads the previous element; BLE compares signed values.
 
+[Source](../examples/insertion_sort.asm).
+
+<!-- EXAMPLE insertion_sort.asm 256 -->
 ```text
 0100  15 04 02 20    MOV.W #$2002,r4
 0104  15 05 0A 20    MOV.W #$200A,r5
 0108  15 06 00 20    MOV.W #$2000,r6
-010C  15 0F 02       MOV.B #2,r7
                      outer:
-010F  10 A0          MOV r4,r0
-0111  10 A5          MOV r5,r1
-0113  1A 04          CMP r1,r0
-0115  42 35 00       BCS done
-0118  10 92          MOV r0,dp
-011A  15 22 00 00    MOV.W [dp+0],r2
-011E  13             MOV r0,r3
+010C  10 A0          MOV r4,r0
+010E  10 A5          MOV r5,r1
+0110  1A 04          CMP r1,r0
+0112  62 2A          BCS done
+0114  10 92          MOV r0,dp
+0116  15 22 00 00    MOV.W [dp+0],r2
+011A  13             MOV r0,r3
                      inner:
-011F  10 A9          MOV r6,r1
-0121  1A 07          CMP r1,r3
-0123  40 16 00       BEQ place
-0126  10 9E          MOV r3,dp
-0128  15 20 FE FF    MOV.W [dp-2],r0
-012C  1A 08          CMP r2,r0
-012E  4D 0B 00       BLE place
-0131  15 60 00 00    MOV.W r0,[dp+0]
-0135  10 AD          MOV r7,r1
-0137  10 77          SUB r1,r3
-0139  4E E3 FF       BRA inner
+011B  10 A9          MOV r6,r1
+011D  1A 07          CMP r1,r3
+011F  60 13          BEQ place
+0121  10 9E          MOV r3,dp
+0123  15 20 FE FF    MOV.W [dp-2],r0
+0127  1A 08          CMP r2,r0
+0129  6D 09          BLE place
+012B  15 60 00 00    MOV.W r0,[dp+0]
+012F  8F 02 00       SUBI.W #2,r3
+0132  6E E7          BRA inner
                      place:
-013C  10 9E          MOV r3,dp
-013E  15 62 00 00    MOV.W r2,[dp+0]
-0142  10 A0          MOV r4,r0
-0144  10 AD          MOV r7,r1
-0146  10 64          ADD r1,r0
-0148  10 B0          MOV r0,r4
-014A  4E C2 FF       BRA outer
+0134  10 9E          MOV r3,dp
+0136  15 62 00 00    MOV.W r2,[dp+0]
+013A  20 02          ADDP #2,r4
+013C  6E CE          BRA outer
                      done:
-014D  01             HALT
+013E  01             HALT
 ```
-
-Code size: 78 bytes. Successful run: 162 instructions.
 
 ## NUL-terminated byte copying
 
 Initialize DS:$2000 with bytes `68 65 6C 6C 6F 00` (hello plus NUL). The same six bytes must appear at DS:$2100. Source and destination must not overlap. MOV.B zero-extends each byte; the terminating NUL is copied before exit.
 
-```text
-0100  15 00 00 20    MOV.W #$2000,r0
-0104  15 01 00 21    MOV.W #$2100,r1
-0108  15 0B 01       MOV.B #1,r3
-                     loop:
-010B  10 92          MOV r0,dp
-010D  15 2A 00 00    MOV.B [dp+0],r2
-0111  10 96          MOV r1,dp
-0113  15 6A 00 00    MOV.B r2,[dp+0]
-0117  10 2A          OR r2,r2
-0119  40 07 00       BEQ done
-011C  10 6C          ADD r3,r0
-011E  10 6D          ADD r3,r1
-0120  4E E8 FF       BRA loop
-                     done:
-0123  01             HALT
-```
+[Source](../examples/byte_copy.asm).
 
-Code size: 36 bytes. Successful run: 55 instructions.
+<!-- EXAMPLE byte_copy.asm 256 -->
+```text
+0100  15 04 00 20    MOV.W #$2000,r4
+0104  15 05 00 21    MOV.W #$2100,r5
+                     loop:
+0108  15 88 00       MOV.B [r4],r0
+010B  15 C8 01       MOV.B r0,[r5]
+010E  1A 40          TST.B r0
+0110  60 06          BEQ done
+0112  20 01          ADDP #1,r4
+0114  21 01          ADDP #1,r5
+0116  6E F0          BRA loop
+                     done:
+0118  01             HALT
+```
 
 ## Recursive factorial with stack locals
 
-No data initialization. Compute 5! using recursive calls and repeated-addition multiplication; DS:$2000 must contain `$0078` (120). Each frame pushes n as a local, reads it at `[sp+0]`, then removes it before RET. SP returns to `$FFFE`; minimum SP is `$FFEA`. No multiply instruction or register-preservation pseudo is required.
+No data initialization. Compute 5! using recursive calls and repeated-addition multiplication; DS:$2000 must contain `$0078` (120). Each frame pushes n as a local, reads it at `[sp+0]`, then removes it before RET. SP returns to `$FFFE`; minimum SP is `$FFEA`. No multiply instruction is required.
 
+[Source](../examples/factorial.asm).
+
+<!-- EXAMPLE factorial.asm 256 -->
 ```text
 0100  15 08 05       MOV.B #5,r0
 0103  1F 10 0C 01    CALL fact
@@ -146,33 +154,32 @@ No data initialization. Compute 5! using recursive calls and repeated-addition m
 010B  01             HALT
                      fact:
 010C  1F 00          PUSH r0
-010E  15 09 01       MOV.B #1,r1
-0111  1A 04          CMP r1,r0
-0113  49 1C 00       BLS base
-0116  10 74          SUB r1,r0
-0118  1F 10 0C 01    CALL fact
-011C  11             MOV r0,r1
-011D  15 32 00 00    MOV.W [sp+0],r2
-0121  15 08 00       MOV.B #0,r0
-0124  15 0B 01       MOV.B #1,r3
+010E  94 01 00       CMPI.W #1,r0
+0111  69 19          BLS base
+0113  8C 01 00       SUBI.W #1,r0
+0116  1F 10 0C 01    CALL fact
+011A  11             MOV r0,r1
+011B  28 32 00       MOV.W [sp+0],r2
+011E  15 08 00       MOV.B #0,r0
                      multiply:
-0127  10 64          ADD r1,r0
-0129  10 7E          SUB r3,r2
-012B  41 F9 FF       BNE multiply
-012E  1F 0B          POP r3
-0130  1F 11          RET
+0121  10 64          ADD r1,r0
+0123  8E 01 00       SUBI.W #1,r2
+0126  61 F9          BNE multiply
+0128  1F 0B          POP r3
+012A  1F 11          RET
                      base:
-0132  15 08 01       MOV.B #1,r0
-0135  1F 0B          POP r3
-0137  1F 11          RET
+012C  15 08 01       MOV.B #1,r0
+012F  1F 0B          POP r3
+0131  1F 11          RET
 ```
-
-Code size: 57 bytes. Successful run: 101 instructions.
 
 ## Multiword carry propagation
 
 Compute `$0001FFFF + $00020001 = $00040000`. DS:$2000 receives the low word `$0000`; DS:$2002 receives the high word `$0004`. ADD produces carry consumed by ADC; intervening stores preserve the resulting flags.
 
+[Source](../examples/multiword.asm).
+
+<!-- EXAMPLE multiword.asm 256 -->
 ```text
 0100  15 00 FF FF    MOV.W #$FFFF,r0
 0104  15 09 01       MOV.B #1,r1
@@ -185,62 +192,64 @@ Compute `$0001FFFF + $00020001 = $00040000`. DS:$2000 receives the low word `$00
 0119  01             HALT
 ```
 
-Code size: 26 bytes. Successful run: 9 instructions.
-
 ## B1 pointers in independent code and data segments
 
 This example starts with the common initial state above, then sets DS=3. Install `hello` plus NUL at physical `$032000` and the word `$0055` at CS:$0300. Install segment 3 as RAM. It copies six bytes to `$032100`, stores the CS constant at `$032108`, and finishes with r4=$2005, r5=$2105, and r6=$0300. Both signed memory displacement and signed pointer adjustment are exercised; no DP transfers or accumulator temporaries are needed to advance the pointers.
 
+[Source](../examples/segmented_copy.asm).
+
+<!-- EXAMPLE segmented_copy.asm 256 -->
 ```text
 0100  15 08 03       MOV.B #3,r0
 0103  10 D2          MOV r0,ds
 0105  15 04 00 20    MOV.W #$2000,r4
 0109  15 05 00 21    MOV.W #$2100,r5
 010D  15 06 02 03    MOV.W #$0302,r6
-0111  15 B2 02 FE FF MOV.W [cs:r6-2],r2
-0116  22 FE          ADDP #-2,r6
-0118  15 D2 01 08 00 MOV.W r2,[ds:r5+8]
+0111  15 A2 FA       MOV.W [cs:r6-2],r2
+0114  22 FE          ADDP #-2,r6
+0116  15 C2 21       MOV.W r2,[ds:r5+8]
                      loop:
-011D  15 88 00       MOV.B [ds:r4],r0
-0120  15 C8 01       MOV.B r0,[ds:r5]
-0123  10 20          OR r0,r0
-0125  40 07 00       BEQ done
-0128  20 01          ADDP #1,r4
-012A  21 01          ADDP #1,r5
-012C  4E EE FF       BRA loop
+0119  15 88 00       MOV.B [ds:r4],r0
+011C  15 C8 01       MOV.B r0,[ds:r5]
+011F  1A 40          TST.B r0
+0121  60 06          BEQ done
+0123  20 01          ADDP #1,r4
+0125  21 01          ADDP #1,r5
+0127  6E F0          BRA loop
                      done:
-012F  01             HALT
+0129  01             HALT
 ```
-
-Code size: 48 bytes. Successful run: 48 instructions.
 
 ## Count-controlled traversal through offset $FFFF
 
 Install bytes `03 04 05` at DS:$FFFD through DS:$FFFF. The program sums them to `$000C` at DS:$2000 and stops with r4=$FFFF. The counter is checked before ADDP, so no one-past-end pointer is required. A separate attempted ADDP #1 at that final pointer must fault with Invalid State.
 
+[Source](../examples/segment_end.asm).
+
+<!-- EXAMPLE segment_end.asm 256 -->
 ```text
 0100  15 04 FD FF    MOV.W #$FFFD,r4
 0104  15 09 03       MOV.B #3,r1
-0107  15 0B 01       MOV.B #1,r3
-010A  15 0A 00       MOV.B #0,r2
+0107  15 0A 00       MOV.B #0,r2
                      loop:
-010D  15 88 00       MOV.B [r4],r0
-0110  10 62          ADD r0,r2
-0112  10 7D          SUB r3,r1
-0114  40 05 00       BEQ done
-0117  20 01          ADDP #1,r4
-0119  4E F1 FF       BRA loop
+010A  15 88 00       MOV.B [r4],r0
+010D  10 62          ADD r0,r2
+010F  8D 01 00       SUBI.W #1,r1
+0112  60 04          BEQ done
+0114  20 01          ADDP #1,r4
+0116  6E F2          BRA loop
                      done:
-011C  15 52 00 20    MOV.W r2,[$2000]
-0120  01             HALT
+0118  15 52 00 20    MOV.W r2,[$2000]
+011C  01             HALT
 ```
-
-Code size: 33 bytes. Successful run: 22 instructions.
 
 ## Stack locals with ADJSP
 
 The callee saves r4/r5, reserves twelve local bytes with ADJSP #-12, accesses slot zero, then releases the frame with ADJSP #12. Expect words `$000E`, `$1111`, `$2222` at DS:$2000/$2002/$2004 and `$0007` at DS:$3000/$3002. SP returns to $FFFE; minimum SP is $FFEC. This follows the current callee-preserved B1 convention.
 
+[Source](../examples/stack_locals.asm).
+
+<!-- EXAMPLE stack_locals.asm 256 -->
 ```text
 0100  15 04 11 11    MOV.W #$1111,r4
 0104  15 05 22 22    MOV.W #$2222,r5
@@ -254,25 +263,26 @@ The callee saves r4/r5, reserves twelve local bytes with ADJSP #-12, accesses sl
 011C  1F 04          PUSH r4
 011E  1F 05          PUSH r5
 0120  25 F4          ADJSP #-12
-0122  15 70 00 00    MOV.W r0,[sp+0]
-0126  15 04 00 30    MOV.W #$3000,r4
-012A  15 05 02 30    MOV.W #$3002,r5
-012E  15 C0 00       MOV.W r0,[r4]
-0131  15 31 00 00    MOV.W [sp+0],r1
-0135  15 C1 01       MOV.W r1,[r5]
-0138  10 64          ADD r1,r0
-013A  25 0C          ADJSP #12
-013C  1F 0D          POP r5
-013E  1F 0C          POP r4
-0140  1F 11          RET
+0122  28 70 00       MOV.W r0,[sp+0]
+0125  15 04 00 30    MOV.W #$3000,r4
+0129  15 05 02 30    MOV.W #$3002,r5
+012D  15 C0 00       MOV.W r0,[r4]
+0130  28 31 00       MOV.W [sp+0],r1
+0133  15 C1 01       MOV.W r1,[r5]
+0136  10 64          ADD r1,r0
+0138  25 0C          ADJSP #12
+013A  1F 0D          POP r5
+013C  1F 0C          POP r4
+013E  1F 11          RET
 ```
-
-Code size: 66 bytes. Successful run: 22 instructions.
 
 ## Register-target code-table dispatch
 
 Install the target label offset as a little-endian word at CS:$0300 (the resolved value is shown below). Load that word into r5, then JS r5. It jumps within current CS without another memory dereference or a stack push. The `$DEAD` fallthrough is skipped; DS:$2000 becomes `$BEEF` and SP stays $FFFE. The table word is `$010E`.
 
+[Source](../examples/dispatch.asm).
+
+<!-- EXAMPLE dispatch.asm 256 -->
 ```text
 0100  15 04 00 03    MOV.W #$0300,r4
 0104  15 A5 00       MOV.W [cs:r4],r5
@@ -285,20 +295,24 @@ Install the target label offset as a little-endian word at CS:$0300 (the resolve
 0116  01             HALT
 ```
 
-Code size: 23 bytes. Successful run: 6 instructions.
-
-## Design observations
-
-The original six examples retain their encodings and results. B1 traversal avoids accumulator pointer updates; count-controlled termination handles a byte at offset $FFFF without wrapping. ADJSP supports compact stack-local allocation, and register-target JS supports table dispatch. Keep the current B1 preservation convention until caller-liveness measurements justify changing the ABI. The working-copy extension directions and remaining deferrals are defined in [ISA.md](ISA.md#extension-status-and-retained-evidence).
-
 ## Software trap and system-call example
 
-[examples/syscall.asm](../examples/syscall.asm) defines an illustrative service 1: add input r0+r1 modulo 65536, return the result in r0 and status zero in r1. Other service numbers return r0=0/r1=1 (this example's unsupported-service status). These numbers are example OS policy, not architectural assignments.
+Install [syscall.asm](../examples/syscall.asm) at `0:$0100` and
+[syscall_handler.asm](../examples/syscall_handler.asm) at `1:$0200`; set vector 6
+to `00 02 01 00`. Configure protected entry DS=SS=0, SB=0, ST=SP=$FFFE using
+entry staging and COMMIT_ENTRY before executing SWI. The stack must have backed,
+readable/writable next-push space even though this handler does not push. K entry
+uses valid live K stack state; U entry uses the configured independent K stack.
+The fixture runs from K and restores every saved field through IRET.
 
-Install caller bytes at CS=0, PC=$0100, and handler bytes at CS=1, PC=$0200. Set vector 6 at physical `$18` to `00 02 01 00`. Start with valid saved-restorable stack limits and ordinary RAM installed. No initialized or mapped stack storage is required because neither program accesses it. DS/SS are arbitrary valid segments; I may be zero or one and no external request is pending for this example.
+Example service 1 returns saved r0+r1 modulo 65536 in r0 and status zero in r1;
+other service numbers return r0=0/r1=1. These service numbers are software policy.
+At entry xpc=$0108, xcs=0, xcause=6 and xtrap=1; address metadata is clear.
+The caller halts at $0109 with r0=12/r1=0 and all other caller state restored.
 
-Caller, 9 bytes:
+Caller:
 
+<!-- EXAMPLE syscall.asm 256 -->
 ```text
 0100  15 08 07       MOV.B #7,r0
 0103  15 09 05       MOV.B #5,r1
@@ -306,35 +320,33 @@ Caller, 9 bytes:
 0108  01             HALT
 ```
 
-Handler, 42 bytes in segment 1:
+Handler:
 
+<!-- EXAMPLE syscall_handler.asm 512 -->
 ```text
 0200  1F 34 02       GETX xtrap,r2
-0203  15 0B 01       MOV.B #1,r3
-0206  1A 0E          CMP r3,r2
-0208  41 12 00       BNE unsupported
-020B  1F 20 00       GETX xr0,r0
-020E  1F 21 01       GETX xr1,r1
-0211  10 64          ADD r1,r0
-0213  1F 40 00       SETX r0,xr0
-0216  10 05          XOR r1,r1
-0218  1F 41 01       SETX r1,xr1
-021B  1F 12          IRET
-unsupported:
-021D  10 00          XOR r0,r0
-021F  15 09 01       MOV.B #1,r1
-0222  1F 40 00       SETX r0,xr0
-0225  1F 41 01       SETX r1,xr1
-0228  1F 12          IRET
+0203  96 01 00       CMPI.W #1,r2
+0206  61 12          BNE unsupported
+0208  1F 20 00       GETX xr0,r0
+020B  1F 21 01       GETX xr1,r1
+020E  10 64          ADD r1,r0
+0210  1F 40 00       SETX r0,xr0
+0213  10 05          XOR r1,r1
+0215  1F 41 01       SETX r1,xr1
+0218  1F 12          IRET
+                     unsupported:
+021A  10 00          XOR r0,r0
+021C  15 09 01       MOV.B #1,r1
+021F  1F 40 00       SETX r0,xr0
+0222  1F 41 01       SETX r1,xr1
+0225  1F 12          IRET
 ```
-
-At entry, xpc=$0108, xcs=0, xcause=6, xtrap=1, and the address words are zero. The caller eventually halts with r0=12, r1=0, r2–r7/DP/segments/stack/CSR restored, and PC=$0109. The handler's temporary r2/r3 and arithmetic flags do not escape. Changing SWI's immediate to an unsupported value resumes at the same address with r0=0/r1=1.
 
 <!-- WORKED_IMAGES_END -->
 
 ## Far call and near helper
 
-This implemented working-mode example uses two separately assembled images:
+This working/minimal-v1 example uses two separately assembled images:
 [far_call.asm](../examples/far_call.asm) in CS=0 at `$0100`, and
 [far_callee.asm](../examples/far_callee.asm) in CS=1 at `$0200` (physical
 `$010200`). Start with CS=DS=SS=0, PC=$0100, SB=0, SP=ST=$FFFE, flags=0,
@@ -343,12 +355,13 @@ It runs on the protected working machine using reset identity kernel descriptors
 for executable code and writable/readable RAM stacks.
 
 ```sh
-python3 tools/isa.py assemble examples/far_call.asm --revision working --origin 0x100 -o build/far_call.bin
-python3 tools/isa.py assemble examples/far_callee.asm --revision working --origin 0x200 -o build/far_callee.bin
+python3 tools/isa.py assemble examples/far_call.asm --origin 0x100 -o build/far_call.bin
+python3 tools/isa.py assemble examples/far_callee.asm --origin 0x200 -o build/far_callee.bin
 ```
 
 Caller, fourteen bytes:
 
+<!-- EXAMPLE far_call.asm 256 -->
 ```text
 0100  15 00 05 00    MOV.W #5,r0
 0104  15 01 01 00    MOV.W #1,r1
@@ -358,6 +371,7 @@ Caller, fourteen bytes:
 
 Callee and near helper, nine bytes:
 
+<!-- EXAMPLE far_callee.asm 512 -->
 ```text
 0200  1F 10 05 02    CALL helper
 0204  55             RETF
@@ -372,8 +386,8 @@ to restore CS=0/PC=$010D. The run halts after eight instructions with r0=6,
 r1=1, PC=$010E, CS=0, SP=$FFFE, and minimum SP=$FFF8. DS/SS remain zero.
 ADD changes flags normally; CALL/CALLF/RET/RETF preserve them individually.
 Return mnemonics must match their frame types. No syscall or privilege
-transition occurs. The CPU conformance suite executes these exact image bytes;
-the toolchain checks source assembly and round trips independently.
+transition occurs. [Appendix C](ISA.md#implementation-status-and-remaining-work)
+records execution and source-round-trip evidence for these images.
 
 The [C++ loader](../examples/far_call.cpp) runs those two assembled images with
 an explicit instruction limit and checks the final result. After the normal
@@ -391,8 +405,8 @@ working-mode image at CS:$0100, with CS=DS=SS=0, SB=0, SP=ST=$FFFE,
 flags=0 and ordinary installed RAM. Set reset vector 0 to `00 01 00 00`.
 
 ```sh
-python3 tools/isa.py assemble examples/immediate_shifts.asm --revision working -o build/immediate_shifts.bin
-python3 tools/isa.py disassemble build/immediate_shifts.bin --revision working
+python3 tools/isa.py assemble examples/immediate_shifts.asm -o build/immediate_shifts.bin
+python3 tools/isa.py disassemble build/immediate_shifts.bin
 ```
 
 The 89-byte image halts after 26 instructions at PC=$0159. It stores the
@@ -414,8 +428,9 @@ The final MOV loads `$12AB` without changing flags, then the zero-count byte
 operation preserves its upper byte and all flags. Final r0=$12AB and N/Z/C=1/0/1
 still reflect the earlier byte rotation; they are not recomputed from that word.
 V/I/E remain zero. Positive byte rotations clear the upper byte even when a full
-rotation leaves the low byte unchanged. The CPU executes these exact bytes and
-checks all nine result words; the toolchain reproduces and round-trips the source.
+rotation leaves the low byte unchanged. Expected results cover all nine stored
+words; [Appendix C](ISA.md#implementation-status-and-remaining-work) records the
+exact execution and source-round-trip evidence.
 
 Compared with eight original one-bit word shifts (sixteen bytes/eight
 instructions), `SHRI.W #8,rd` uses three bytes/one instruction and commits once.
@@ -423,109 +438,12 @@ The original sequence permits seven additional IRQ boundaries; matching final
 values is not a promise of identical interrupt or fault observation points.
 Rotations are true rotations within 8/16 bits; they never consume the input C.
 
-## Code-density evidence
-
-These are retained results of the completed RAM-only design studies. Temporary
-assemblers, execution models, private study encodings and their runner have been
-removed after the architectural direction was accepted. The tables are historical design evidence,
-not reproducible benchmark commands or full working-copy conformance results. Production
-conformance tests continue to execute the baseline images above.
-
-The imm4 columns below refer to the retired signed-four-bit, word-ALU prototype,
-not the assigned immediate `.B`/`.W` families. Assigned byte forms compute
-8-bit flags/results, while assigned word forms are three bytes. The retained
-study sizes therefore must not be attributed to the new formats without
-remeasuring. The earlier SUBI deferral applies to that old prototype only.
-
-### Array summation
-
-The published 47-byte program leaves its final pointer in DP. The compact B1
-source in [array_sum.asm](../examples/array_sum.asm) instead leaves the pointer in
-r4 and leaves DP unchanged; it occupies 34 bytes, executes 33 instructions for
-five words, and still handles an empty array. The
-[DP-preserving source](../examples/array_sum_dp.asm) uses 37 bytes and 34 instructions.
-Both sum modulo 65536, leave r1=0 and write DS:$2100. These standalone programs
-do not promise callee preservation of r4. Input placement supports counts 0–128.
-
-| Variant | Zero-safe bytes | Positive-count bytes | Instructions for five words | Fetched bytes |
-|---|---:|---:|---:|---:|
-| Published baseline | 47 | — | 50 | 123 |
-| Compacted baseline, DP | 37 | 32 | 34 | 89 |
-| Compacted baseline, B1 | 34 | 29 | 33 | 82 |
-| rel8 only | 32 | 28 | 33 | 76 |
-| B1 simm6 only | 34 | 29 | 33 | 82 |
-| imm4 only | 31 | 26 | 32 | 79 |
-| Combined rel8/B1/imm4 study | 29 | 25 | 32 | 73 |
-
-Positive-count forms omit the OR/BEQ empty-array guard and require count ≥1.
-Only baseline sources are executable by the current toolchain. B1 simm6 saves
-nothing in this loop because its displacements are zero. Immediate arithmetic
-removes a constant setup and frees r3; ADDI #-1 can supply the decrement without
-a separate SUBI opcode. The study checked empty, boundary-valued, random and
-128-word inputs, but its percentages are not whole-kernel estimates.
-
-### OS-oriented workloads
-
-Eight small workloads represented syscall dispatch, a 17-word saved-context
-switch, copying, strings, lists, stack frames, an interrupt counter and structures.
-All setup, handlers and constant instructions count toward code size; identical
-initialized input/PCB data is excluded. The context-switch baseline replaces the
-implemented return frame and demonstrates no isolation. The interrupt ACK is a RAM write,
-not a device. All eight baseline programs were compared against the implemented CPU;
-64 program/feature variants were checked in the retired RAM model.
-
-| Workload | Implemented bytes | rel8 | B1 simm6 | imm4 | ADDI+CMPI | SP uimm8 | Post-inc | All | Instructions implemented → all | B0/B1 used implemented → all |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| syscall dispatch | 59 | 58 | 59 | 56 | 56 | 59 | 59 | 55 | 17 → 16 | 4/0 → 3/0 |
-| context frame switch | 281 | 281 | 221 | 281 | 281 | 281 | 281 | 221 | 73 → 73 | 1/1 → 1/1 |
-| memory copy (32 bytes) | 30 | 29 | 30 | 27 | 27 | 30 | 26 | 22 | 101 → 68 | 3/2 → 2/2 |
-| NUL string copy | 24 | 23 | 24 | 24 | 24 | 24 | 20 | 19 | 75 → 51 | 1/2 → 1/2 |
-| linked-list sum | 28 | 27 | 26 | 28 | 28 | 28 | 28 | 25 | 22 → 22 | 3/1 → 3/1 |
-| stack-frame call | 62 | 62 | 62 | 62 | 62 | 54 | 62 | 54 | 21 → 21 | 2/1 → 2/1 |
-| interrupt counter/ACK | 24 | 24 | 22 | 21 | 21 | 24 | 24 | 19 | 9 → 8 | 2/1 → 1/1 |
-| small structure | 49 | 48 | 37 | 49 | 49 | 49 | 49 | 36 | 14 → 14 | 3/1 → 3/1 |
-| **Total** | 557 | 552 | 481 | 548 | 548 | 549 | 549 | 451 | | |
-
-Combined study code falls from **557 to 451 bytes (19.0%)**. Single-feature columns
-share one baseline and their savings cannot simply be added. Compact B1 accesses
-benefit context spills, lists and structures; short SP offsets benefit frames;
-rel8 benefits control flow; immediates remove setup/constant registers.
-ADDI+CMPI matches the three-operation immediate study, so SUBI has no additional
-measured size benefit here. Post-increment benefits both copy loops, but remains
-deferred pending compiler/runtime workloads.
-
-Instruction counts are dynamic guest instructions, including SWI/IRET/HALT and
-excluding hardware IRQ entry. They are not cycle counts. B0/B1 counts are distinct
-explicit working registers, excluding saved xrN words: a pressure proxy, not a
-compiler liveness/spill analysis. Optimized forms permit scratch-register and
-relocated-PC differences; output RAM, flags, stack balance, segments and DP were
-checked. The corpus is small and does not establish protection, nested recovery,
-MMIO ordering or identical fault/interrupt observation points after fusion.
-
-The [working-copy density decisions](ISA.md#extension-status-and-retained-evidence) are the current
-architecture dispositions; private study bytes are not assigned encodings.
-
-## Calling-convention evaluation
-
-The existing recursive factorial uses no B1 registers, so either convention has no B1 save/restore cost. The new stack-frame example uses r4/r5 and its caller observes their original values after return; that is a live-across-call case. The original copy/sort examples run as standalone images and cannot by themselves establish callee-save costs.
-
-The following is a static instruction/byte comparison for two borrowed B1 registers, not a benchmark. PUSH and POP are each two bytes.
-
-| Caller use of r4/r5 | Current ABI: both callee-preserved | Alternative ABI: both caller-saved |
-|---|---|---|
-| Both dead after the call | Callee saves/restores: 4 instructions, 8 bytes | No preservation required: 0 instructions, 0 bytes |
-| Both live after the call | Callee saves/restores: 4 instructions, 8 bytes | Caller saves/restores: 4 instructions, 8 bytes |
-| Neither used by the callee | No preservation required | No preservation required |
-| Multiple live call sites to one callee | One shared 8-byte callee sequence | Preservation sequences may be repeated at each call site |
-
-Keep the current ABI until real call graphs and liveness show a consistent benefit. Measure total caller plus callee code bytes and executed instructions, including recursive calls and pointer-heavy leaf routines. Changing the ABI later does not require changing instruction encodings.
-
-
 ## Executable protected kernel demo
 
 Build and run `build/kernel_demo` from the repository root. CMake uses the
 production assembler and [generate_kernel_fixtures.py](../tools/generate_kernel_fixtures.py)
-to build all seven images in explicit working mode. The
+to build nine runtime images and a separate nested-handler test probe in explicit
+working mode. The
 [loader](../examples/kernel.cpp) installs vectors, code and zeroed data, then
 only calls `step`; descriptor setup and every context switch execute in guest code.
 
@@ -536,31 +454,40 @@ only calls `step`; descriptor setup and every context switch execute in guest co
 | [kernel_swi.asm](../examples/kernel_swi.asm) | `$1200` | Bootstrap, copy service and progress/shutdown services |
 | [kernel_memory.asm](../examples/kernel_memory.asm) | `$1300` | Match registered user-access failure, edit K recovery PC and saved access controls, IRET |
 | Fatal HALT | `$1400` | Stop unexpected exceptions/services |
-| [kernel_copy.asm](../examples/kernel_copy.asm) | `$1500` | One-word copy fixture; registered fault `$150F`, error continuation `$1521` |
+| [kernel_copy.asm](../examples/kernel_copy.asm) | `$1500` | Leased one-word copy; registered fault `$1539`, error continuation `$1551` |
 | [kernel_load_context.asm](../examples/kernel_load_context.asm) | `$1600` | Load twenty writable saved words from a pinned process image |
+| [kernel_controls.asm](../examples/kernel_controls.asm) | `$7000` | Reusable control API, journal, leases and depth-indexed access scopes |
+| [kernel_control_fault.asm](../examples/kernel_control_fault.asm) | `$1800` | Exact-site control recovery; route unowned Memory faults to the copy handler |
+| Recovery registry data | `$A000–$A631` | 396 instruction-PC/cause/access records generated from production assembly |
 | [kernel_user.asm](../examples/kernel_user.asm) | `$010100` and `$020100` | Same virtual U program in two private physical frames |
 
-Vectors 0/2/5/6 select boot/memory/IRQ/SWI; other assigned exceptions select
-fatal HALT. Kernel state at `$3002/$3004` records user progress, `$3006` counts
+Vectors 0/5/6 select boot/IRQ/SWI. Other assigned exception vectors select the
+control recovery handler; unowned Memory faults proceed to `$1300`, and
+unregistered or unexpected failures take fatal HALT. Kernel state at `$3002/$3004` records user progress, `$3006` counts
 switches, and `$3008` counts recovered copies. Process images occupy `$4000/$4100`.
 Map 7/8 code selector 1 is execute-only, data selector 3 maps physical frames
 3/4, and stack selector 2 maps frames 5/6 with policy `$1000–$2000`.
 Both user counters are virtual `3:$2000`; they reside at physical `$032000/$042000`.
 
-Boot commits a kernel-entry stack independent of either user stack. SWI 0 creates
+Boot initializes library ownership before configuring a pinned kernel stack at
+`$C000–$FFFE`, independent of either user stack. Each PCB holds a generation-one
+map lease; generation metadata is stored at PCB offset 40. SWI 0 creates
 a K-origin frame; PREPARE_USER_RETURN validates and marks it before first U IRET.
 Each user issues SWI 2 with an intentionally absent target selector 5. The copy
 uses MOVU and faults under U permissions while the caller's valid data selector
 remains 3. A second frame captures the K MOVU instruction and exact memory
 metadata. The handler checks origin/phase/access/width/PC/CS/reason, clears live
-and saved access controls, and redirects only that K frame to the error path.
+access through the library, repairs saved access controls and redirects only that
+K frame to the error path. The copy service then ends its leased scope.
 The copy service then edits the lower U frame to return error 1. No user-map
 invalidation or user-stack access is needed for recovery.
 
-The timer first fires at time 4096 and repeats every 512 retired instructions.
+After library boot, the timer deadline is the snapshotted current time plus 4096;
+it repeats every 512 retired instructions. Deadline words use an explicit carry
+chain, so added initialization work cannot make a fixed absolute deadline stale.
 Its pinned, I=0 handler saves all twenty writable words, loads the other known
 valid image, acknowledges source 0, and returns through hardware validation.
-These fixed images need no allocator or stale-handle lease. A production
+These fixed images use PCB leases and a trusted known-valid return layout. A production
 scheduler must prevalidate candidates and keep a rollback image across its
 replacement window as specified in the software ABI. The protected conformance
 suite separately rejects an invalid candidate at IRET and restores the original
@@ -568,123 +495,495 @@ process through a nested K rollback continuation.
 
 Successful shutdown requires both private counters at least 3 and at least four
 timer switches; it disables the timer/PIC and HALTs in the SWI handler. The demo
-completes 5,783 CPU boundaries with four switches and two recovered copy faults.
+completes 15,518 CPU boundaries with four switches and two recovered copy faults.
 The conformance run executes a second identical machine, compares registers,
 frames, controls, mappings and devices at every boundary, and compares final RAM.
 
-## Test-instruction review and measurements
+## Guest control-management library
 
-The accepted design supports B0-only TST.B, TSTI.B and TSTI.W in working mode,
-with TST/TST.W as the existing OR-self alias in all modes. The
-[normative instruction entry](ISA.md#tst-tsti--test-a-register-without-writing-it)
-defines widths, flags, literals and fault behavior; the
-[encoding reference](ISA_ENCODING.md#assigned-test-layouts-and-runtime-modes)
-defines their exact bytes and runtime gates. These measurements explain the
-accepted design without assigning any UART register layout.
+[kernel_controls.asm](../examples/kernel_controls.asm) is ordinary working-mode
+assembly assembled by the production toolchain, with no new opcodes or host-only
+control calls. The [software ABI](ISA.md#guest-control-management-library-abi)
+defines ownership, pinning, status and lifetime requirements. The library is
+placed at kernel selector 0 offset $7000; these fixed software entry slots are
+seven bytes each. r4 points to a 32-byte kernel request starting within
+$6000–$67DF. All words below are little-endian and may be unaligned.
 
-### Design rationale
+| Entry | Routine | Request inputs / effect |
+|---|---|---|
+| `$7000` | descriptor_install(map, segment, generation, descriptor) | Validate the seven fields and commit one descriptor |
+| `$7007` | descriptor_remove(map, segment, generation) | Commit a canonical all-zero absent descriptor |
+| `$700E` | map_publish(map, generation) | Publish and return the nonzero current generation at request+4 |
+| `$7015` | map_invalidate(map, generation) | Require quiescence; invalidate and return next generation, or quarantine at $FFFF |
+| `$701C` | entry_configure(tuple) | Commit a validated DS/SS=0, pinned kernel stack tuple |
+| `$7023` | backing_query(address) | Copy result words before releasing scratch ownership |
+| `$702A` | uaccess_begin(map, segment, generation) | Acquire a transient lease and establish a scope for the current frame depth |
+| `$7031` | uaccess_end(map, generation) | Restore the scope's prior controls and release exactly its reference |
+| `$7038` | prepare_user_return() | Check bootstrap preconditions and execute pure full-image CPU validation |
+| `$703F` | map_acquire(map, generation) | Hold a PCB/continuation lifetime reference |
+| `$7046` | map_release(map, generation) | Release a held lifetime reference |
+| `$704D` | uaccess_clear() | Disable live access without releasing another frame depth's scope |
+| `$7054` | initialize() | Exclusive reset-boot path; reject configured entry, live maps/controls or active frames |
 
-A dedicated TST.W encoding would have the same register preservation, flags,
-length and retirement behavior as OR rd,rd, so it would spend four tags without
-adding capability or density. Canonical disassembly stays OR. TST.B saves one
-byte over TSTI.B #$FF and directly expresses byte zero/sign testing. Extending
-the three encoded forms to r4–r7 would cost twelve more tags; unary B1 word
-testing would need four tags or an accumulator temporary. No measured workload
-justifies that expansion. Internal and memory operands remain unsupported.
+The private abort jump is $705B. These addresses are software placement, not ISA
+allocations. The generator verifies the slots and emits label constants; kernel
+sources use the same fixed ABI. r0 returns OK=0, INVALID=1, BUSY=2, FAULT=3 or
+STALE=4, and r1 identifies a retained committed effect. r4–r7/SP and NZCVI are
+preserved; r2/r3 are scratch. Test r0 explicitly after calling: status does not
+replace the preserved flags. IRQs are disabled while the owner holds staging,
+then the caller's policy is restored before RET. Depth eight returns BUSY before
+acquiring ownership so an operation always has a free recovery slot.
 
-Tests sample a register once and do not access operand memory, combine an MMIO
-read with a test, or provide memory atomicity. BEQ/BNE and BMI/BPL use the new
-Z/N; carry/overflow predicates use retained C/V. BLT/BGE after a test are not a
-fresh signed comparison. Use CMPI for character equality and range comparisons,
-including carriage return and line feed.
+| Request byte offset | Descriptor / map / scope operations | Entry operation | Query operation |
+|---|---|---|---|
+| 0 | map ID | ignored | physical address low word |
+| 2 | segment (where needed) | ignored | physical address high eight bits |
+| 4 | expected generation; publish/invalidate output | ignored | ignored |
+| 6–18 | frame, flags, lower, upper_lo, upper_hi, sb, st | DS, SS, SB, ST, SP at 6–14 | ignored |
+| 20,22,24,26 | unused | unused | copied kind, run_lo, run_hi, hardware valid |
+| 28 | unused | unused | completed-output marker; trust only with status OK |
 
-### Size and instruction comparison
+Before first publication a newly initialized map has FREE state and generation
+zero; publishing establishes generation one. After invalidation the returned
+next generation is required for rebuilding and republishing. Reference count
+$FFFF refuses acquisition. No numeric generation wrap reauthorizes a stale
+handle: exhaustion quarantines the map until a new reset boot discards old
+software handles. Map 0 cannot be published/invalidated, and descriptor helpers
+refuse kernel selectors 0/$FF so their own mappings remain pinned. Descriptor
+format checks do not allocate backing or decide which physical frames are safe
+to grant U access; the trusted kernel must enforce that allocation policy.
 
-Counts below are static bytes/instructions, with equivalent branch bodies
-excluded. A temporary is an additional live B0 register. MOV register copies
-cost one byte for distinct B0 registers. ANDI uses its assigned and implemented
-two/three-byte forms. These are local sequence measurements, not compiler or
-end-to-end UART performance results.
+| Kernel RAM | Ownership |
+|---|---|
+| `$4000/$4100` | Twenty-word PCB images plus generation at +40; each retains one map lease |
+| `$5000–$50DF` | Library lock/owner/operation/checkpoint/commit journal and shared-control backups |
+| `$50E0` | Test-only nested diagnostic probe result; not a CPU register or runtime queue |
+| `$5200–$59FF` | 256 map records of eight bytes: generation, references, state, reserved |
+| `$5A00–$5A8F` | Nine sixteen-byte depth scopes: active, map, generation, prior ua map/segment, reserved |
+| `$6000/$6040/$6080` | Demo control request, user-copy request, nested clear/probe request |
+| `$7000–$7847` | Library code, including pinned cleanup/compensation |
+| `$A000–$A631` | Registry: count followed by exact PC/flags pairs |
+| `$C000–$FFFD` | Kernel stack policy; exclusive top $FFFE |
 
-| Task / sequence | Bytes | Instructions | Temporaries | MMIO reads |
-|---|---:|---:|---:|---:|
-| Word zero/sign: `OR r0,r0` or `TST.W r0` | 2 | 1 | 0 | 0 |
-| Arbitrary byte zero/sign: copy, `ANDI.B #$FF` | 3 | 2 | 1 | 0 |
-| Arbitrary byte zero/sign: `TST.B r0` | 2 | 1 | 0 | 0 |
-| Preserve byte, test mask: copy, `ANDI.B` | 3 | 2 | 1 | 0 |
-| Preserve byte, test mask: `TSTI.B` | 3 | 1 | 0 | 0 |
-| Preserve word, test mask: copy, `ANDI.W` | 4 | 2 | 1 | 0 |
-| Preserve word, test mask: `TSTI.W` | 4 | 1 | 0 | 0 |
-| RX/TX flags: one load, two copy/ANDI.B/BNE sequences | 15 | 7 | 1 | 1 |
-| RX/TX flags: two load/ANDI.B/BNE sequences | 16 | 6 | 0 | 2 |
-| RX/TX flags: one load, two TSTI.B/BNE sequences | 15 | 5 | 0 | 1 |
+A single operation backs up selectors plus all seven descriptor-shadow words,
+five entry-shadow words and both query-address words. A nested caller returns
+BUSY without using the global journal or query latch. The query helper deliberately
+leaves the read-only result latch caller-clobbered; its address shadow is restored
+and completed output is owned by the caller. Direct SETC commands in unrelated
+kernel subsystems would bypass this convention. The boot, SWI, copy and memory
+handlers now call library entry slots; scheduler/frame spilling still uses GETX/
+SETX because editing a saved image is a separate, explicitly ordered software ABI.
 
-If the upper byte is known zero, `OR rd,rd` can test byte zero using its word
-Z. Its N comes from bit 15, so it cannot replace byte sign testing. Using only
-the legacy register ALU, zero-only mask testing can load a mask, copy the value,
-then AND registers (six bytes, three instructions, two temporaries); hoisting
-the mask changes that comparison and must be accounted for separately.
+Recovery at $1800 matches owner depth, K origin/CS and an exact generated registry of 392 operation PCs plus four pinned-finisher RET
+sites. Transfer-target recovery requires that the target itself be a registered
+operation instruction; broken cleanup/finisher fetches remain fatal. The generated flags distinguish fetch faults, read/write operands,
+entry probes, registered control-transfer targets, PREPARE's U-return validation,
+and durable command boundaries.
+Invalid/Stack failures are admitted only at eligible instruction sites. Faults
+outside registered operations, including broken pinned cleanup, are fatal.
+For a matching fault, IRET redirects the one K frame to compensation; internal
+CALL stack space is unwound to the checkpoint, preserving a lower syscall frame.
 
-### UART and kernel sequences
+A completed hardware descriptor/map/entry/query/bootstrap command remains
+committed even if its next instruction faults. Publish/invalidate finish metadata
+from the journal idempotently. An aborted begin/acquire/release compensates its
+reference/authority changes; an end that passed readiness completes teardown.
+These are deliberate software outcomes, not a multi-instruction transaction.
+The status/committed pair tells callers whether retry or cleanup is appropriate.
 
-Assume r4 points to a hypothetical byte-wide MMIO sample register, whose bit 0
-is RX-ready and bit 1 TX-ready. This fixture is not a UART register allocation.
-Branches here dispatch separate handlers; no sample reread is needed:
+The additional [kernel_control_probe.asm](../examples/kernel_control_probe.asm)
+is a test handler at $1C00: during recovery it attempts a backing query, verifies
+BUSY/no commit, records that deferral, then enters the production fault handler.
+Native tests use fixed per-call backing holes and injected typed IRQs to exercise
+staging and commit boundaries, operand failures, lower-frame retention, malformed
+inputs, stale references, quarantine and read-only-latch ownership. These trusted
+failure fixtures are distinct from normal replay. The actual demo uses guest-only
+setup, two PCB leases and temporary copy scopes; all transient leases are released
+on both copy error paths, while the two resumable PCBs retain their references.
 
-```asm
-MOV.B [r4],r0
-TSTI.B #$01,r0
-BNE rx_ready
-TSTI.B #$02,r0
-BNE tx_ready
+## Executable blocking-console terminal
+
+The `console_demo` target selects Working mode with
+`MachineProfile::ConsoleV1`. The [console profile](ISA.md#console-machine-profile-and-recorded-input)
+defines the device registers, interrupt source and version-2 replay records.
+The loader installs images and configuration before reset. After reset, host
+input reaches the machine only through recorded JSONL boundary events.
+
+```sh
+build/console_demo --record build/terminal.jsonl
+build/console_demo --replay build/terminal.jsonl
 ```
 
-For a path that processes both flags, have the RX handler return to the second
-test with r0 preserved. Every repeated polling iteration deliberately samples
-again; tests within an iteration use that iteration's one register snapshot.
+The single-run recorder writes the exact loader RAM/backing SHA-256 header and
+one canonical input record. The replayer verifies the header before stepping,
+queues the recorded boundary, and supplies no automatic input. It rejects stale,
+malformed, leftover and wrong-profile events. The demo accepts its recorder's
+canonical scheduling syntax; the CPU API accepts the full strict JSON contract.
+A reset requires a new loader image/header and run queue; this single-run driver
+rejects reset streams. The native console suite separately exercises recorded
+reset and rejection of old-run queued input.
 
-The side-effect fixture returns `$03` on its first read and consumes that
-sample; its next read returns `$00`. Testing masks 1 and 2 against the first
-snapshot finds both flags. Re-reading for the second test loses TX-ready and
-consumes another sample. The fixture demonstrates why reloads are not generally
-equivalent without assuming a property of every real UART status register.
+A calls `read(console, buffer, 32)` with no bytes available. The kernel stores
+A's return image and software request, takes a generation lease, marks A blocked,
+and returns all helper calls before selecting B. B increments a private counter
+and checks preserved registers. Once B has made observable progress, the runner
+records `hello\r\n`. Source 2 copies those seven bytes to A using MOVU, completes
+A's saved result and marks A runnable. Its handler returns B's unchanged frame.
+A later eligible timer selects A, which resumes after SWI, checks preserved
+NZCV/registers, uppercases ASCII, omits CR, counts LF and emits `HELLO\n` through
+a kernel write service. It then shuts down the fixture.
 
-For an ASCII byte already in r0, `TST.B r0` followed by BEQ detects NUL, while
-BMI detects bit 7 (non-ASCII). `TSTI.B #$80,r0` followed by BNE explicitly tests
-the high bit. For kernel flags, `TSTI.W #$8001,r0` followed by BNE detects either
-selected flag while retaining the entire original word for later tests.
+### Console guest layout and software ABI
 
-### Exact test vectors
+| Region | Purpose |
+|---|---|
+| `$0100` | `kernel_console_boot.asm`, private maps 7/8 and two PCB leases |
+| `$1300` | `kernel_console_memory.asm`, exact MOVU byte-store fixup |
+| `$1400` | Fatal HALT retaining the failing frame |
+| `$1600` | Shared `kernel_load_context.asm` return-image loader |
+| `$1800` | Shared control-library fault dispatcher |
+| `$1C00` | Test-only `kernel_console_probe.asm`; absent from normal loader |
+| `$3006/$3008/$300A/$300C` | Schedule selections / copy faults / blocked reads / completed requests |
+| `$3020/$3022/$3024/$3026` | Map reuse / stale-handle result / shutdown cancellations / test probe |
+| `$3030/$3040` | Deferred idle timer work / owned one-byte RX staging |
+| `$4000/$4100` | A/B trusted PCBs and request records |
+| `$4200` | Rollback image for the current outer user frame |
+| `$5000–$5A8F` | Shared control-library lock, map generations/leases and scopes |
+| `$6000/$6100/$61C0` | Boot/control request, serialized copy/lifetime request, fault clear request |
+| `$7000` | Shared guest control-management library |
+| `$8000` | `kernel_console.asm`, IRQ/SWI, scheduler and software continuations |
+| `$A000` | Shared exact-site control-library recovery registry |
+| Physical `$10100/$20100` | A terminal / B progress program, virtual CS=1 PC=$0100 |
+| Physical `$32000/$42000` | A receive buffer / B private progress counter |
+| Physical `$32100/$32102/$32104` | A initial count / destination offset / selector |
+| Physical `$32020–$32028` | A returned count/status, completion, LF and preservation witnesses |
+| Physical `$42010` | B fixture mode: 0 progress, 1 blocking read, 2 cancel A |
 
-Flags list only N/Z; C/V/I/E retain their input values in every row.
+Each PCB starts with the twenty writable return words in the existing scheduling
+ABI. The following offsets are bytes, not word indices:
 
-| Instruction | Original rd | Mask | Final rd | N/Z |
-|---|---|---|---|---|
-| TST.B | `$FF00` | implicit `$FF` | `$FF00` | 0/1 |
-| TST.W | `$FF00` | implicit `$FFFF` | `$FF00` | 1/0 |
-| TST.B | `$1280` | implicit `$FF` | `$1280` | 1/0 |
-| TSTI.B | `$12FF` | `$00` | `$12FF` | 0/1 |
-| TSTI.B | `$12FF` | `$FF` | `$12FF` | 1/0 |
-| TSTI.B | `$1280` | `$80` | `$1280` | 1/0 |
-| TSTI.W | `$1280` | `$0080` | `$1280` | 0/0 |
-| TSTI.W | `$8000` | `$8000` | `$8000` | 1/0 |
-| TSTI.W | `$FFFF` | `$FFFF` | `$FFFF` | 1/0 |
+| Offset | Meaning |
+|---:|---|
+| 40 | PCB map-generation handle; saved process-map word at 34 identifies owner |
+| 42 | State: RUNNABLE=1, BLOCKED_READ=2, DYING=3 |
+| 44 | Requested maximum, 0–32 |
+| 46 / 48 | Destination offset / selector |
+| 50 / 52 | Completed-byte count / status |
+| 54 | Software continuation: NONE=0, READ_RETURN=1 |
+| 56 | Request generation-lease ownership, 0/1 |
 
-### Review disposition and current validation
+Service 2 takes r0=count, r1=destination selector, r4=offset. It returns r0=bytes,
+r1=status and preserves all other registers, NZCV and I. Status 0 is success,
+1 is invalid request/copy failure, and 2 is cancellation. Zero count succeeds
+without validating a pointer. Counts above 32 and selectors other than this
+fixture's pinned writable selector 3 fail immediately with zero bytes and no
+FIFO consumption. No-data positive reads block. Available data completes with
+1–count bytes, without waiting to fill the request. The recorded request owns a
+map-generation lease independently of its PCB; each live MOVU scope takes one
+additional lease. Completion releases both transient leases exactly once.
 
-The accepted forms consume twelve secondary tags at $1A $40–$4B and no primary
-opcodes. The word alias saves four tags against the initial sixteen-tag budget.
-With immediate shifts/rotates included, ext1a is 80 assigned / 176 unassigned;
-the complete primary map remains 95 / 161 with $80–$AF preserved. Metadata
-schema 3 gates new forms to working mode and validates selector bytes early;
-older-schema consumers must reject unsupported versions.
+The one-byte staging slot belongs to the serialized I=0 handler. A successful RX
+instruction consumes a byte before the separate MOVU store. A store fault drops
+that staged byte and completes the request with status 1 and the number already
+copied; remaining device bytes stay queued. There is no implicit retry or rollback
+of a previous device read. At offset $FFFF, a successfully copied byte is counted;
+a request for more fails before pointer wrap and leaves the next FIFO byte intact.
+A failed scope begin consumes no byte. Exact Memory/UACCESS/OPERAND/write/byte
+faults at `copy_fault` redirect to `copy_error`; other faults take the fatal path.
+The nested fixup clears live and saved access controls, and normal scope cleanup
+releases the retained lease. Staging contents remain diagnostic after completion.
 
-The production toolchain checks exact bytes, aliases, all destinations, literal
-boundaries, labels, segment ends, truncation, reserved neighbors, legacy rejection,
-sequence sizes and the read-to-consume fixture. CPU tests exhaust all unary input
-words and byte value/mask pairs, cover flags/branches and precise failure, and
-execute the forms in protected U/K. See the
-[conformance requirements](ISA.md#conformance-tst-and-tsti) and
-[current executed evidence](ISA.md#executed-implementation-evidence) for coverage.
-The hypothetical byte-wide UART fixture is independent of the assigned minimal-v1
-word-only PIC/timer window and does not claim a UART device implementation.
+Service 4 transmits the low byte of r0. Service 5 is a progress checkpoint.
+Service 1 cancels any remaining peer read, disables devices and halts with one
+retained outer user frame; PCB diagnostic leases remain owned. The fixture does
+not claim a production frame allocator or arbitrary process creation.
+
+Service 3 is a privileged software policy exercised by B: mark A DYING before
+releasing its request and PCB leases, invalidate map 7, bind selector 3 to successor
+physical frame 7, and publish generation 2. The old PCB handle is then deliberately
+checked and rejected as STALE. Late input stays queued without writing either
+old or successor backing. DYING A is never resumed. A production cancellation
+caller owns the policy for delivering a cancellation result or destroying a PCB.
+
+### Scheduling and replay invariants
+
+Scheduling is reached by a jump at the shared stack baseline, with I=0, depth 1,
+and a U-origin top frame. All transient CALL chains have returned. The current
+image is copied into a separate rollback slot before replacement. Candidate
+validation checks the live generation/PCB lease, fixed CS/DS/SS and stack policy,
+PC/SP ranges, legal CSR bits and cleared access controls. Boot code/backing and
+these two process descriptors are pinned and immutable while runnable. The
+validator depends on that fixed layout; a dynamic allocator must additionally
+validate its selected descriptors/backing before calling this loader. A rejected
+candidate restores the independently saved current image. The test-only IRQ hook
+corrupts A's candidate PC and verifies B continues with its preserved image.
+
+When both processes block, the kernel retains one outer U frame and executes
+EI/HALT without a suspended helper chain. A K-origin console IRQ may complete a
+PCB but never replaces that outer frame. If it interrupted the pending HALT,
+it advances only its own K return PC to the idle continuation, preventing a lost
+wakeup. The outer continuation disables interrupts and selects a validated
+runnable PCB. Nested timers only defer work. Source 2 is enabled while requests
+wait; otherwise queued excess bytes are left for the next read without an IRQ
+storm. A timer and RX simultaneously pending retain lowest-source arbitration.
+
+`console_conformance` records each stimulus and runs a second machine with the
+same loader image and records. It compares all registers/contexts, descriptors,
+control staging, query/entry state, map publication, timer/PIC, diagnostic records,
+RX/TX contents, sequence/run/boundary counters and commit counts at every boundary,
+then compares all loader RAM. Scenarios include early/delayed/short/32-byte reads,
+excess input, simultaneous interrupts, all-blocked idle advance/wakeup, the
+EI/HALT window, invalid requests, segment-end partial copies, nested copy faults
+at depths 2/3, cancellation with pending/late input, map reuse, and invalid-candidate
+rollback. Device tests exercise exact register rights/widths, FIFO/capture bounds,
+JSON and transactional errors, reset disposal and artifact/profile binding.
+The earlier minimal-v1 four-switch/two-fixup demo remains a separate fixture.
+
+## SmallC compiler and executable workloads
+
+[SmallC 0.1.0](../tools/smallc.py) compiles a deliberately small C-like language to
+assigned Working-mode assembly. The production assembler is the only instruction
+encoder. [corpus.json](../examples/workloads/corpus.json) defines the inputs and
+expected outcomes. [measurements.json](../examples/workloads/measurements.json)
+records current binary/source/build hashes, exact event schedules and measured costs.
+
+```sh
+python3 tools/smallc.py examples/workloads/struct_array.c --assembly build/struct_array.asm --artifact build/struct_array.json
+python3 tools/measure_workloads.py --build build --output build/compiler/measurements.json
+```
+
+### Supported language and limits
+
+Objects use `u8`, `i8`, `u16`, `i16`, fixed-size one-dimensional arrays, and named
+fixed-layout `struct` types. Functions return scalars or near pointers. The subset
+supports declarations, assignment, numeric casts, unary arithmetic/complement/not,
+addition/subtraction/multiplication, bit operations, constant-count shifts,
+comparisons, short-circuit `&&`/`||`, `if`/`else`, `while`, `for`, calls and return.
+Array indexing, `&`, pointer dereference, `.` and `->` are supported. Decimal/0x
+literals, comments, constant static initializers and aggregate brace initializers
+are accepted. `sizeof(type)` is a compile-time constant. Integer multiplication is
+a software loop; shifts use assigned immediate-count instructions.
+
+Values are little-endian. Bytes have alignment 1; words and pointers alignment 2.
+A struct aligns each member naturally, uses the maximum member alignment, and
+rounds its total size accordingly. Array stride is the full padded element size.
+Examples include a byte/word record of size 4 and a three-byte/word record of size
+6. Static objects are zero-initialized, including padding; explicit aggregate
+initializers zero unspecified members. Automatic objects require initialization
+before use; the compiler does not prove initializedness or pointer lifetimes.
+
+Byte arithmetic promotes to 16 bits; an operation with a `u16` operand is unsigned,
+otherwise signed. Integer arithmetic wraps modulo 65536, and byte assignment/casts
+truncate then zero- or sign-extend as appropriate. Comparisons use that signedness;
+signed right shift is arithmetic. Shift counts must be constants 0–16. These are
+explicit SmallC rules, including defined signed wrap, rather than a claim of full
+ISO C semantics. Expression operands evaluate left-to-right, call arguments
+right-to-left, and assignment evaluates the value before its target address.
+Fallthrough or a bare return yields zero. Function/block declarations share one
+function scope; shadowing is rejected. Identifier case is significant.
+
+Unsupported constructs include preprocessing/includes, strings, floating point,
+32-bit integers, division/remainder, variable-length/multidimensional arrays,
+pointer-to-pointer declarations, aggregate value copies/parameters/returns,
+function pointers, variadic/indirect calls, dynamic shift counts, `break`/`continue`,
+external linking and a general standard library. `void` functions are unsupported.
+Returning an SS pointer and casting between DS and SS pointers are rejected.
+Static pointer initializers require null or an explicit compatible near-pointer
+cast of a numeric constant expression; static pointer arithmetic and address
+relocation expressions are unsupported. The fixture
+limits global data to `$2000–$2DFF`, each automatic frame to 1024 bytes and each
+user image to `$0100–$3FFF`; these are compiler/loader policies, not ISA limits.
+
+### SmallC calling and checked-pointer ABI
+
+r0 holds expression results and function returns. r0–r3 and NZCV are caller-clobbered;
+r4–r7 are callee-saved. The baseline allocates named locals to SS stack slots,
+uses r0/r1 for values, r2/r3 for scratch and r4 for formed addresses; r7 holds the
+frame base. This fixed allocation respects the B0/B1 arithmetic distinction.
+Expression temporaries spill explicitly; no register coloring or range optimizer
+is claimed. I and segment state are preserved by ordinary functions.
+
+Callers push one 16-bit argument slot per parameter, right-to-left, CALL, then
+remove the arguments. Callees push r4/r5/r6/r7, allocate an even local area, set
+r7=SP, and reverse that sequence before RET. Parameter 0 is at frame-base +
+`local_bytes + 10`, subsequent parameters at +2 increments. Direct locals use
+SP addressing with compiler-tracked temporary depth. The exact frame sizes and
+exported function entry addresses are in each generated artifact. Recursion is
+not statically bounded; the hardware's checked stack governs exhaustion.
+
+A near pointer is a 16-bit offset with a static address-space type. `u16 *p` points
+into DS; `ss u16 *p` into SS. Globals decay to DS pointers and local arrays/addresses
+to SS pointers. No selector is silently dropped. DS/SS casts or implicit cross-space
+argument/assignment conversions are rejected. Same-space explicit pointer casts
+and raw integer-to-near-pointer casts are available; source code owns object
+lifetime and valid backing. A raw cast does not grant access outside its segment
+or process map. SS-pointer dereferences temporarily select DS=SS, perform the
+access and restore DS; the saved DS value remains live in r3 across interrupts.
+
+Pointer `p+n`/`p-n` supports nonnegative counts. Signed-negative index/count values
+are rejected, so move backward with `p-n`, not `p+(-n)`. Direct array indexing also
+checks its declared count. Scaling, address-context additions/subtractions and
+multiplication check overflow before any narrowed address is used; non-power-of-two
+strides use a checked software scale. Pointer arithmetic checks carry/borrow,
+and a typed dereference checks the complete object's width at the segment end.
+Raw pointers retain segment bounds, not an object-length capability. Arithmetic
+computed earlier into a scalar follows the scalar wrap rule; checked address
+expressions cannot recover a scalar's earlier lost arithmetic history.
+
+Pointer difference requires identical pointee/address-space types, a signed
+16-bit representable byte distance, and an exact power-of-two element stride.
+Its result is an element count. The compiler rejects difference for other strides.
+The conservative byte-distance limit also applies when division would make a
+larger distance representable. SS pointer lifetimes remain the caller's obligation.
+
+| Check result | Meaning |
+|---:|---|
+| 1 | Direct array index outside its declared count |
+| 2 | Signed-negative pointer count/index |
+| 3 | Index arithmetic or element scaling overflow/underflow |
+| 4 | Near-pointer addition carry or subtraction borrow |
+| 5 | Complete typed dereference crosses the segment end |
+| 6 | Pointer difference range or element alignment failure |
+
+A failed check stores its code at process DS:`$2F04` and executes SWI 255. This
+fixture terminates through the kernel's fatal service path, retaining one U frame
+and the current stack for diagnosis. It is a compiler-defined source failure,
+not an ISA Memory exception, and performs no failed target access. Exact trap PCs
+and saved flags are recorded per binary. Successful functions balance their stack
+and preserve B1; intentional guard termination does not unwind a return chain.
+
+User-only intrinsics are `read(u8 *buffer,u16 count)`, `putc(value)`, `yield()` and
+`io_status()`. They use existing SWI services 2/4/5, respectively. Read returns the
+count and stores its status at DS:`$2F02`; `io_status()` reads it. The existing
+up-to-32-byte/blocking semantics apply. The entry wrapper stores main's result at
+DS:`$2F00` and invokes shutdown service 1. Library images omit this wrapper and
+reject user I/O intrinsics. The generated pure kernel helper at K `$B000` uses the
+same argument/callee-save ABI, accesses a local struct through an SS pointer and
+returns 1011 to its guest boot caller.
+
+### Compiler execution fixture and replay schedule
+
+All binaries run on Working/console-v1 with the guest kernel control library,
+private A/B data and stacks, timer preemption and recorded input. The compiler
+fixture uses executable CS bounds `$0100–$3FFF` for both processes and accepts
+saved DS=2 or 3, allowing an interrupted SS access to resume before restoring DS.
+These guest map/validator changes are assembled separately. The original minimal-v1
+and console examples retain their code and traces. The `preempt_stack` workload
+proves an actual IRQ during DS=SS, restored context and a balanced caller frame.
+
+The terminal is compiled from `terminal.c`. It blocks in read while B increments
+its private counter, receives recorded `hello\r\n`, counts a line, resets its column
+counter, uppercases ASCII, omits CR and outputs `HELLO\n`. A generated `at()` call
+loop and the SS-pointer loop also survive timer switches. Boundary programs cover
+byte offsets 0/$FFFF, a word at $FFFE, carry/borrow, scaling/index overflow,
+negative/out-of-count indexing and difference range/alignment failures. Native
+checks verify results, short-circuit side effects, signed-byte behavior, data
+canaries, K/peer memory isolation, B1 preservation and stack balance.
+
+Each program is replayed from its own exact loader image. The runner records input
+at the first U boundary after A is BLOCKED_READ and B has made at least three
+progress iterations. Compiled terminal input arrives at B=10558; its hand-written
+reference uses B=10552. Their final B counts differ. The frozen JSON includes every
+record's run/B/sequence and the per-binary artifact header. Applying one binary's
+numeric schedule to another is not a replay-equivalence test. The runner compares
+all retained registers, frames, descriptors, staging, latches, PIC/timer/console,
+sequence and diagnostics at every boundary, plus all final loader RAM.
+
+## Compact addressing and branches
+
+B1 memory displacements -32..31 use three bytes; other signed 16-bit displacements
+use five. SP offsets 0..255 use three bytes and 256..65535 use four. SP offsets
+are unsigned and must remain in the allocated stack. Raw long in-range encodings
+are legal, but assembly chooses compact forms.
+
+Unsuffixed branches relax to rel8 when their final target fits. `.S` forces rel8
+and `.W` forces rel16. Disassembly prints the width so branch bytes round-trip.
+All forms retain widened address checks, precise faults and atomic memory/MMIO
+transactions. MOVU keeps its independent zero/disp16 forms and reserved base bits.
+
+## Current workload measurements
+
+Build and run the CTest suite, then reproduce the current report:
+
+```sh
+python3 tools/measure_workloads.py --build build --output examples/workloads/measurements.json
+python3 tools/evaluate_pointer_arithmetic.py --build build --output examples/workloads/pointer_study.json
+```
+
+[measurements.json](../examples/workloads/measurements.json) records current
+production assembly/code/data hashes, compiler/build inputs, actual retirements,
+stack use, moves/spills, addressing distributions and per-binary replay schedules.
+Measurements describe the pinned corpus and compiler, not unavoidable ISA costs.
+The hand-written references match selected fixed workloads with specialized loops.
+
+<!-- COMPILER_BASELINE_BEGIN -->
+| Program | Code bytes | Retired compiled | Total B | B0/B1 moves | Spills/reloads | Max U stack | Address B0 ALU | Check instructions |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| array_byte | 206 | 194 | 10181 | 6 | 25/25 | 32 | 4 | 4 |
+| array_word | 211 | 242 | 10229 | 6 | 31/31 | 18 | 10 | 35 |
+| array_word_hand | 41 | 34 | 10021 | 0 | 0/0 | 4 | 0 | 0 |
+| struct_array | 384 | 259 | 10246 | 9 | 29/29 | 18 | 16 | 60 |
+| struct_array_hand | 62 | 34 | 10021 | 0 | 0/0 | 4 | 0 | 0 |
+| local_struct | 159 | 61 | 10048 | 5 | 1/1 | 28 | 0 | 4 |
+| variable_stride | 262 | 320 | 10307 | 6 | 33/33 | 38 | 32 | 52 |
+| pointer_math | 334 | 102 | 10089 | 3 | 9/9 | 18 | 9 | 22 |
+| byte_boundary | 130 | 47 | 10034 | 4 | 4/4 | 14 | 1 | 1 |
+| word_boundary | 95 | 32 | 10019 | 3 | 1/1 | 14 | 0 | 4 |
+| fail_add (guard 4) | 120 | 21 | 9998 | 1 | 1/1 | 14 | 1 | 6 |
+| fail_sub (guard 4) | 121 | 21 | 9998 | 1 | 1/1 | 14 | 1 | 6 |
+| fail_scale (guard 3) | 138 | 19 | 9996 | 1 | 1/1 | 14 | 0 | 5 |
+| fail_negative (guard 2) | 133 | 25 | 10002 | 1 | 2/1 | 16 | 0 | 5 |
+| fail_bounds (guard 1) | 111 | 22 | 9999 | 1 | 2/1 | 16 | 0 | 5 |
+| fail_width (guard 5) | 74 | 16 | 9993 | 1 | 0/0 | 12 | 0 | 5 |
+| fail_index_overflow (guard 3) | 144 | 38 | 10015 | 1 | 3/1 | 22 | 3 | 9 |
+| pressure | 295 | 337 | 10324 | 5 | 37/37 | 42 | 0 | 0 |
+| signed_bytes | 358 | 90 | 10077 | 1 | 5/5 | 14 | 0 | 0 |
+| shifts | 96 | 38 | 10025 | 1 | 2/2 | 16 | 0 | 0 |
+| preemption | 253 | 6080 | 22837 | 193 | 673/673 | 32 | 192 | 480 |
+| terminal | 466 | 692 | 16382 | 9 | 78/78 | 18 | 7 | 21 |
+| terminal_hand | 129 | 149 | 14346 | 0 | 0/0 | 10 | 0 | 0 |
+| kernel_caller | 174 | 66 | 10060 | 5 | 3/3 | 10 | 0 | 4 |
+| packed_struct | 290 | 236 | 10223 | 5 | 17/17 | 18 | 52 | 28 |
+| local_array | 244 | 181 | 10168 | 6 | 19/19 | 36 | 3 | 3 |
+| fail_difference (guard 6) | 106 | 25 | 10002 | 1 | 1/1 | 16 | 1 | 5 |
+| fail_alignment (guard 6) | 115 | 29 | 10006 | 1 | 1/1 | 16 | 1 | 7 |
+| constants | 151 | 62 | 10049 | 3 | 4/4 | 22 | 0 | 0 |
+| preempt_stack | 242 | 16166 | 59990 | 769 | 1793/1793 | 34 | 256 | 256 |
+
+| Matched fixed-input reference | Compiled / hand bytes | Compiled / hand retired | Static ratio | Retired ratio | B change |
+|---|---:|---:|---:|---:|---:|
+| array_word | 211/41 | 242/34 | 5.15× | 7.12× | +208 |
+| struct_array | 384/62 | 259/34 | 6.19× | 7.62× | +225 |
+| terminal | 466/129 | 692/149 | 3.61× | 4.64× | +2036 |
+<!-- COMPILER_BASELINE_END -->
+
+## Checked register-to-pointer arithmetic decision
+
+A checked B0-to-B1 register add remains unassigned. `ADDP.R` is study notation and
+is rejected by the assembler. The [design contract](ISA.md#checked-register-to-pointer-add-deferred-design-contract)
+proposes an unsigned B0 addend, B1 destination, widened range checking, preserved
+flags and precise Invalid State overflow; DP and signed/subtract variants are
+excluded. Existing B0 ADD and signed-immediate ADDP retain their own semantics.
+
+[pointer_study.json](../examples/workloads/pointer_study.json) separates actual
+per-PC execution counts from unencoded two-/three-byte cost models. Across the
+current eighteen successful programs, replacing every modeled final add with a
+two-byte candidate saves 16 code bytes and 273 retirements but adds 115 explicit
+bank moves. Selecting only five byte-access sites saves 13 bytes/274 retirements
+with no extra moves. Neither removes a spill or reload. A three-byte candidate
+saves two bytes for the all-site substitution, eight for byte sites only.
+
+Those estimates assume spare registers and dead flags and replace the compiler's
+SWI #255 / software reason 4 with an architectural fault. Keeping the current
+software guard makes the substitution larger (44 extra bytes/777 retirements in
+the two-byte all-site model). Existing safe lowering preserves that error ABI at
+zero extra cost. All negative-index, bound, scale and access-width checks remain.
+The models do not simulate candidate instructions, relocated schedules or equivalent
+exception frames.
+
+Defer adoption until a pointer-residency/register-allocation prototype demonstrates
+benefit against an equally optimized safe existing-ISA implementation and the
+language/kernel overflow ABI is chosen. A resident-B1 microsequence could save
+more than the current B0-based lowering; that remains an experiment. Numeric
+encoding, tooling, precise-fault and replay integration would need review before
+assignment. Mathematical range checks are study validation, not CPU conformance.

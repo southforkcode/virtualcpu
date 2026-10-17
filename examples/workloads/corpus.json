@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "array_byte",
+      "source": "array_byte.c",
+      "result": 385
+    },
+    {
+      "name": "array_word",
+      "source": "array_word.c",
+      "result": 33031,
+      "reference": "hand_array_word.asm"
+    },
+    {
+      "name": "struct_array",
+      "source": "struct_array.c",
+      "result": 606,
+      "reference": "hand_struct_array.asm",
+      "memory": {
+        "8196": [
+          9
+        ],
+        "8204": [
+          200,
+          0
+        ]
+      }
+    },
+    {
+      "name": "local_struct",
+      "source": "local_struct.c",
+      "result": 1241
+    },
+    {
+      "name": "variable_stride",
+      "source": "variable_stride.c",
+      "result": 22
+    },
+    {
+      "name": "pointer_math",
+      "source": "pointer_math.c",
+      "result": 61,
+      "memory": {
+        "8200": [
+          255,
+          255
+        ]
+      }
+    },
+    {
+      "name": "byte_boundary",
+      "source": "byte_boundary.c",
+      "result": 33,
+      "memory": {
+        "0": [
+          33
+        ],
+        "65535": [
+          90
+        ],
+        "8192": [
+          57,
+          48
+        ]
+      }
+    },
+    {
+      "name": "word_boundary",
+      "source": "word_boundary.c",
+      "result": 48879,
+      "memory": {
+        "65534": [
+          239,
+          190
+        ]
+      }
+    },
+    {
+      "name": "fail_add",
+      "source": "fail_add.c",
+      "result": 0,
+      "guard": 4,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_sub",
+      "source": "fail_sub.c",
+      "result": 0,
+      "guard": 4,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_scale",
+      "source": "fail_scale.c",
+      "result": 0,
+      "guard": 3,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_negative",
+      "source": "fail_negative.c",
+      "result": 0,
+      "guard": 2,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_bounds",
+      "source": "fail_bounds.c",
+      "result": 0,
+      "guard": 1,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_width",
+      "source": "fail_width.c",
+      "result": 0,
+      "guard": 5,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_index_overflow",
+      "source": "fail_index_overflow.c",
+      "result": 0,
+      "guard": 3,
+      "unchanged_data": true
+    },
+    {
+      "name": "pressure",
+      "source": "pressure.c",
+      "result": 134
+    },
+    {
+      "name": "signed_bytes",
+      "source": "signed_bytes.c",
+      "result": 124,
+      "memory": {
+        "8194": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "shifts",
+      "source": "shifts.c",
+      "result": 28531
+    },
+    {
+      "name": "preemption",
+      "source": "preemption.c",
+      "result": 432,
+      "preempt": true
+    },
+    {
+      "name": "terminal",
+      "source": "terminal.c",
+      "result": 1,
+      "input": "hello\r\n",
+      "output": "HELLO\n",
+      "reference": "hand_terminal.asm",
+      "memory": {
+        "8224": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "kernel_caller",
+      "source": "kernel_caller.c",
+      "result": 0,
+      "helper": "kernel_helper.c",
+      "kernel_result": 1011
+    },
+    {
+      "name": "packed_struct",
+      "source": "packed_struct.c",
+      "result": 3009
+    },
+    {
+      "name": "local_array",
+      "source": "local_array.c",
+      "result": 24
+    },
+    {
+      "name": "fail_difference",
+      "source": "fail_difference.c",
+      "result": 0,
+      "guard": 6,
+      "unchanged_data": true
+    },
+    {
+      "name": "fail_alignment",
+      "source": "fail_alignment.c",
+      "result": 0,
+      "guard": 6,
+      "unchanged_data": true
+    },
+    {
+      "name": "constants",
+      "source": "constants.c",
+      "result": 9
+    },
+    {
+      "name": "preempt_stack",
+      "source": "preempt_stack.c",
+      "result": 2048,
+      "preempt": true,
+      "preempt_ss": true
+    }
+  ]
+}

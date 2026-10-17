@@ -39,8 +39,10 @@ CMPI.W #0,r0
 BNE $1400
 MOV.W #$4000,r5
 CALL $1600
-MOV.W #7,r0
-SETC r0,command
+MOV.W #$6000,r4
+CALL $7038
+TST.W r0
+BNE $1400
 IRET
 finish:
 MOV.W #$00FF,r0

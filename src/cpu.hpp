@@ -10,8 +10,7 @@
 #include <vector>
 
 namespace vcpu {
-// Legacy modes retain their binary/host behavior; Working uses protected execution.
-enum class Revision { V04, V05, Working };
+enum class MachineProfile { MinimalV1, ConsoleV1 };
 enum class ExecutionState { Running, Halted, TerminalResetFault, TerminalDoubleFault };
 enum class Cause : uint16_t { Illegal=1, Memory=2, Stack=3, Invalid=4, IRQ=5, Trap=6, Privilege=7 };
 enum class Mode : uint16_t { User=0, Kernel=1 };
@@ -50,12 +49,13 @@ struct TerminalDiagnostic {
     uint16_t pending=0, in_service=0;
 };
 struct BoundaryEvent {
-    enum class Kind { Edge, Level, IdleAdvance, Reset, Invalid };
+    enum class Kind { Edge, Level, IdleAdvance, Reset, Invalid, ConsoleInput };
     std::string run, boundary, sequence;
     Kind kind=Kind::Edge;
     unsigned source=0;
     bool asserted=false;
     std::string target_time="0";
+    std::vector<uint8_t> data;
 };
 enum class HostError { None=0, BadFormat=1, WrongBoundary=2, BadSequence=3, BadSource=4, BadState=5, BadTime=6, BadProfile=7 };
 struct ProtectedState {
@@ -76,21 +76,22 @@ struct ProtectedState {
     uint16_t timer_mode=0, shadow_mode=0;
     bool snapshot_valid=false, deadline_overflow=false;
     uint64_t device_commits=0;
+    std::vector<uint8_t> console_rx, console_tx;
 };
 // Host loader/debugger mutations occur between steps, on the execution thread.
 class VirtualCPU {
 public:
-    explicit VirtualCPU(Revision revision=Revision::V05, size_t ram_bytes=1u<<24);
+    explicit VirtualCPU(size_t ram_bytes=1u<<24,
+                        MachineProfile profile=MachineProfile::MinimalV1);
     Registers& registers() { return regs_; }
     const Registers& registers() const { return regs_; }
     uint16_t csr() const { return regs_.flags | (context_ ? 0x40 : 0); }
     const std::optional<Context>& context() const { return context_; }
     const std::optional<Fault>& diagnostic() const { return diagnostic_; }
     ExecutionState state() const { return state_; }
-    Revision revision() const { return revision_; }
-    bool irq_pending() const { return protected_ ? protected_->pending!=0 : pending_; }
-    void request_irq(); // Legacy source-less API; Working requires typed events.
-    Mode mode() const { return protected_?protected_->mode:Mode::Kernel; }
+    MachineProfile profile() const { return profile_; }
+    bool irq_pending() const { return protected_->pending!=0; }
+    Mode mode() const { return protected_->mode; }
     const std::optional<ProtectedState>& protected_state() const { return protected_; }
     const std::optional<TerminalDiagnostic>& terminal_diagnostic() const { return terminal_; }
     const std::string& boundary() const { return boundary_; }
@@ -99,6 +100,7 @@ public:
     HostError apply_boundary_events(const std::vector<BoundaryEvent>& records);
     HostError apply_boundary_json(const std::string& json_lines);
     HostError advance_idle_to(uint64_t target);
+    std::string replay_header() const; // Bound to reset-boundary RAM/backing artifacts.
     HostError verify_replay_header(const std::string& json, const std::vector<uint8_t>& ram_image,
                                    const std::vector<uint8_t>& backing_map) const;
     void map(uint32_t address, size_t length, bool installed=true);
@@ -108,18 +110,16 @@ public:
     // One instruction or interrupt entry. False means no progress.
     bool step();
 private:
-    Revision revision_;
+    MachineProfile profile_;
     Registers regs_;
     std::optional<Context> context_;
     std::optional<Fault> diagnostic_;
     ExecutionState state_=ExecutionState::Running;
-    bool pending_=false;
     std::vector<uint8_t> ram_, installed_;
     std::optional<ProtectedState> protected_;
     std::optional<TerminalDiagnostic> terminal_;
     std::string boundary_="0", run_="0", sequence_="0";
     bool has_reset_=false;
-    uint16_t last_source_=0;
     uint8_t read(uint32_t address) const;
     uint32_t access(uint16_t segment, int64_t offset, unsigned width, Access type=Access::Read,
                     Phase phase=Phase::Operand, bool mmio=false) const;
@@ -140,12 +140,11 @@ private:
     uint16_t read_context(unsigned selector) const;
     void write_context(unsigned selector, uint16_t value);
     uint16_t mmio_read(uint32_t address) const;
+    void commit_mmio_read(uint32_t address);
     std::function<void()> stage_mmio(uint32_t address, uint16_t value);
     void timer_due();
     static void evaluate_timer(ProtectedState& state);
     static void increment(std::string& decimal);
-    uint32_t vector(unsigned cause) const;
-    void enter(Cause cause, uint16_t pc, std::optional<uint32_t> address={}, uint8_t service=0);
     void fault(Fault failure);
     void execute();
 };

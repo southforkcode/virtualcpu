@@ -2,21 +2,21 @@
 import json
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_LEVELS = {'0.4': 4, '0.5': 5, 'working': 6}
+
+
+def payload_text():
+    text = (ROOT / 'doc/ISA_ENCODING.md').read_text()
+    section = text.split('\n<!-- ISA_ENCODING_JSON_BEGIN -->\n', 1)[1].split('\n<!-- ISA_ENCODING_JSON_END -->', 1)[0]
+    return section.split('```json\n', 1)[1].split('\n```', 1)[0]
 
 
 def metadata():
-    text = (ROOT / 'doc/ISA_ENCODING.md').read_text()
-    section = text.split('\n<!-- ISA_ENCODING_JSON_BEGIN -->\n', 1)[1].split('\n<!-- ISA_ENCODING_JSON_END -->', 1)[0]
-    result = json.loads(section.split('```json\n', 1)[1].split('\n```', 1)[0])
-    return validate(result)
+    return validate(json.loads(payload_text()))
 
 
 def validate(result):
-    if result['isa_revision'] != '0.5' or result['schema_version'] != 3:
+    if result['isa_revision'] != 'working' or result['schema_version'] != 5:
         raise ValueError('Unsupported ISA metadata revision/schema')
-    if result['runtime_modes'] != RUNTIME_LEVELS:
-        raise ValueError('Unsupported runtime modes')
     if result['instruction_bytes'] != {'min': 1, 'max': 5}:
         raise ValueError('Instruction length requires a consumer capacity audit')
     banks, maps, identifiers = result['register_banks'], result['tables'], set()
@@ -30,8 +30,6 @@ def validate(result):
             if entry['id'] in identifiers:
                 raise ValueError('Duplicate encoding identifier')
             identifiers.add(entry['id'])
-            if entry.get('minimum_runtime', '0.4') not in RUNTIME_LEVELS:
-                raise ValueError('Unsupported minimum runtime')
             match = entry['match']
             if 'values' in match:
                 values = match['values']
@@ -47,7 +45,11 @@ def validate(result):
             if type(length) is not int or not inspected < length <= 5:
                 raise ValueError('Instruction length exceeds decode capacity')
             occupied = set()
+            operand_names = set()
             for field in entry['fields']:
+                if field['name'] in operand_names:
+                    raise ValueError('Duplicate operand name')
+                operand_names.add(field['name'])
                 byte, lsb, width = field['byte'], field['lsb'], field['width']
                 if not (0 <= byte < length and 0 <= lsb < 8 and 1 <= width <= 8-lsb) or field['bank'] not in banks or len(banks[field['bank']]) > 1 << width:
                     raise ValueError('Invalid field bounds/bank')
@@ -55,7 +57,21 @@ def validate(result):
                 if occupied & bits:
                     raise ValueError('Overlapping operand fields')
                 occupied |= bits
+            for operand in entry.get('bit_operands', []):
+                byte, lsb, width = operand['byte'], operand['lsb'], operand['width']
+                if (any(type(v) is not int for v in (byte, lsb, width)) or
+                        not (inspected < byte < length and 0 <= lsb < 8 and 1 <= width <= 8-lsb) or
+                        type(operand['signed']) is not bool or operand['name'] in operand_names):
+                    raise ValueError('Invalid packed operand')
+                bits = {(byte, bit) for bit in range(lsb, lsb+width)}
+                if occupied & bits:
+                    raise ValueError('Overlapping operand fields')
+                occupied |= bits
+                operand_names.add(operand['name'])
             for operand in entry['operands']:
+                if operand['name'] in operand_names:
+                    raise ValueError('Duplicate operand name')
+                operand_names.add(operand['name'])
                 byte, width = operand['byte'], operand['width_bytes']
                 if not (byte > inspected and 1 <= width <= 4 and byte+width <= length):
                     raise ValueError('Invalid operand bounds')
@@ -100,12 +116,3 @@ def tables():
             rows.append(entries[0] if entries else None)
         result[name] = rows
     return result
-
-
-def available(entry, byte, revision):
-    if revision not in RUNTIME_LEVELS:
-        raise ValueError(f'Unsupported ISA revision: {revision}')
-    if not entry or RUNTIME_LEVELS[revision] < RUNTIME_LEVELS[entry.get('minimum_runtime', '0.4')]:
-        return False
-    return not (revision == '0.4' and (entry['id'] == 'swi' or
-                                     entry['id'] == 'getx' and byte == 0x34))

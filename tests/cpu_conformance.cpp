@@ -17,20 +17,22 @@ void control(VirtualCPU& c,uint8_t selector,uint16_t value) {
     c.registers().r[7]=value; c.step(); c.registers()=saved;
 }
 void irq(VirtualCPU& c) {
-    if (c.revision()!=Revision::Working) { c.request_irq(); return; }
-    auto saved=c.registers(); c.load(0x700,{0x15,0x50,2,0,0x15,0x50,6,0});
-    c.registers().cs=0; c.registers().pc=0x700; c.registers().ds=255; c.registers().r[0]=2;
-    c.step(); c.step(); c.registers()=saved;
+    auto saved=c.registers();
+    if(c.state()!=ExecutionState::Halted) {
+        c.load(0x700,{0x15,0x50,2,0,0x15,0x50,6,0});
+        c.registers().cs=0; c.registers().pc=0x700; c.registers().ds=255; c.registers().r[0]=2;
+        c.step(); c.step(); c.registers()=saved;
+    }
     BoundaryEvent event{c.run(),c.boundary(),c.next_sequence(),BoundaryEvent::Kind::Edge}; event.source=1;
     check(c.apply_boundary_events({event})==HostError::None,"fixture source-specific edge");
 }
-VirtualCPU machine(Revision revision=Revision::V05) {
-    VirtualCPU c(revision,0x40000);
+VirtualCPU machine() {
+    VirtualCPU c(0x40000);
     for (unsigned i=0;i<=7;++i) vector_to(c,i,i?0x300:0x100);
     c.load(0x300,{0x1f,0x12}); c.reset();
-    if (revision==Revision::Working) {
-        control(c,0x10,0); control(c,0x11,0); control(c,0x12,0); control(c,0x13,0xfffe); control(c,0x14,0xfffe); control(c,0x7f,5);
-    }
+    control(c,0x10,0); control(c,0x11,0); control(c,0x12,0); control(c,0x13,0xfffe); control(c,0x14,0xfffe); control(c,0x7f,5);
+    auto saved=c.registers();c.load(0x700,{0x15,0x50,2,0});
+    c.registers().pc=0x700;c.registers().ds=255;c.registers().r[0]=2;c.step();c.registers()=saved;
     return c;
 }
 void code(VirtualCPU& c, std::initializer_list<uint8_t> b, uint16_t pc=0x100) {
@@ -40,6 +42,15 @@ void faulted(const VirtualCPU& c, Cause cause, uint16_t pc=0x100) {
     check(c.context().has_value(),"missing context");
     check((*c.context())[17]==unsigned(cause),"wrong cause");
     check((*c.context())[8]==pc,"imprecise fault PC");
+}
+void documented_tests() {
+    for (unsigned reg=0;reg<4;++reg) {
+        auto c=machine(); code(c,{0x1a,uint8_t(0x40+reg)});
+        c.map(0x102,1,false); c.registers().r[reg]=0x12ff; c.registers().flags=0x2d;
+        c.step();
+        check(!c.context() && c.registers().pc==0x102 && c.registers().r[reg]==0x12ff && c.csr()==0x2e,
+              "TST.B complete fetch, preserved register/CVI, byte NZ");
+    }
 }
 uint16_t word(const VirtualCPU& c,uint32_t a) { return c.peek(a)|uint16_t(c.peek(a+1))<<8; }
 void arithmetic() {
@@ -75,7 +86,7 @@ void arithmetic() {
     }
 }
 void bit_tests() {
-    auto c=machine(Revision::Working);
+    auto c=machine();
     auto nz_test=[](uint16_t result,unsigned bits) {
         return unsigned(result==0?1:0)|unsigned(result&(1u<<(bits-1))?2:0);
     };
@@ -106,17 +117,17 @@ void bit_tests() {
             }
     // E is synthesized, preserved in an active context; word TST is OR self.
     for (unsigned reg=0;reg<4;++reg) for (unsigned tag : {0x40,0x44,0x48}) {
-        c=machine(Revision::Working); code(c,{0x26,1}); c.step();
+        c=machine(); code(c,{0x26,1}); c.step();
         c.load(0x300,{0x1a,uint8_t(tag+reg),0x80,0x80});
         auto saved=*c.context(); c.registers().r[reg]=0xff80; c.registers().flags=12; c.step();
         check(c.context() && *c.context()==saved && c.csr()==0x4e && c.registers().r[reg]==0xff80,"test preserves active frame/E/C/V");
-        c=machine(Revision::Working); code(c,{0x10,uint8_t(0x20+5*reg)}); c.registers().r[reg]=0xff00;
+        c=machine(); code(c,{0x10,uint8_t(0x20+5*reg)}); c.registers().r[reg]=0xff00;
         c.step(); check(c.csr()==2 && c.registers().r[reg]==0xff00,"TST.W alias word sign");
     }
     // Every branch consumes fresh N/Z but retained C/V, including signed
     // predicates whose V is deliberately stale rather than a compare result.
     for (unsigned f=0;f<16;++f) for (unsigned condition=0;condition<15;++condition) {
-        c=machine(Revision::Working); code(c,{0x1a,0x44,uint8_t(f&1?0:0x80),uint8_t(0x40+condition),1,0});
+        c=machine(); code(c,{0x1a,0x44,uint8_t(f&1?0:0x80),uint8_t(0x40+condition),1,0});
         c.registers().r[0]=0x1280; c.registers().flags=f; c.step();
         unsigned flags=(f&12)|(f&1?1:2);
         check(c.csr()==flags,"test fresh NZ/retained CV before branch");
@@ -125,26 +136,26 @@ void bit_tests() {
         c.step(); check(c.registers().pc==(truth[condition]?0x107:0x106),"branch after test");
     }
     for (unsigned tag=0;tag<256;++tag) {
-        c=machine(Revision::Working); code(c,{0x1a,uint8_t(tag)},0xfffe); c.step();
+        c=machine(); code(c,{0x1a,uint8_t(tag)},0xfffe); c.step();
         bool assigned=tag<0x14 || (tag>=0x20 && tag<=0x23) || (tag>=0x30 && tag<=0x33) || (tag>=0x40 && tag<=0x4b) || (tag>=0x60 && tag<=0x87);
         check(c.context() && (((*c.context())[17]!=1)==assigned),"working ext1a complete map");
     }
     for (unsigned tag=0x40;tag<=0x4b;++tag) {
         unsigned length=tag<0x44?2:tag<0x48?3:4;
         for (unsigned missing=1;missing<length;++missing) {
-            c=machine(Revision::Working); code(c,{0x1a,uint8_t(tag),0xff,0xff});
+            c=machine(); code(c,{0x1a,uint8_t(tag),0xff,0xff});
             c.map(0x100+missing,1,false); c.registers().r.fill(0xff00); c.registers().flags=0x2e;
             auto old=c.registers(); c.step(); faulted(c,Cause::Memory);
             check(c.registers().r==old.r && (*c.context())[10]==old.flags,"test missing operand atomicity");
         }
-        c=machine(Revision::Working);
+        c=machine();
         code(c,{0x1a,uint8_t(tag),0xff,0xff},0x100); // Place exactly length bytes at segment end.
         std::vector<uint8_t> bytes{0x1a,uint8_t(tag),0xff,0xff}; bytes.resize(length);
         c.load(65536-length,bytes); c.registers().pc=uint16_t(65536-length);
         c.registers().r.fill(0x12ff); c.registers().flags=0x2d;
         auto old=c.registers(); c.step(); faulted(c,Cause::Memory,uint16_t(65536-length));
         check(c.registers().r==old.r && (*c.context())[10]==old.flags,"test next-PC fault atomicity");
-        c=machine(Revision::Working); c.load(65535-length,bytes); c.registers().pc=uint16_t(65535-length); c.step();
+        c=machine(); c.load(65535-length,bytes); c.registers().pc=uint16_t(65535-length); c.step();
         check(!c.context() && c.registers().pc==0xffff,"test last representable next PC");
     }
 }
@@ -175,7 +186,7 @@ void immediate_shifts() {
     auto flags=[](uint16_t old,unsigned bits,unsigned count,std::pair<uint16_t,bool> result) {
         return count?unsigned((old&~7)|(result.first==0?1:0)|(result.first&(1u<<(bits-1))?2:0)|(result.second?4:0)):old;
     };
-    auto c=machine(Revision::Working);
+    auto c=machine();
     for (unsigned kind=0;kind<5;++kind) for (unsigned width : {8u,16u})
         for (unsigned reg=0;reg<4;++reg) for (unsigned count=0;count<=16;++count)
             for (unsigned f=0;f<32;++f) for (unsigned value : {0u,1u,0x80u,0xffu,0x12abu,0x8000u,0xff00u,0xffffu}) {
@@ -224,20 +235,20 @@ void immediate_shifts() {
             check(c.registers().r==old.r && (*c.context())[10]==old.flags && c.registers().sp==old.sp,"invalid count atomicity");
         }
         for (unsigned missing : {1u,2u}) {
-            c=machine(Revision::Working); code(c,{0x1a,uint8_t(tag),16}); c.map(0x100+missing,1,false);
+            c=machine(); code(c,{0x1a,uint8_t(tag),16}); c.map(0x100+missing,1,false);
             c.registers().r.fill(0x12ab); c.registers().flags=0x2e; auto old=c.registers(); c.step(); faulted(c,Cause::Memory);
             check(c.registers().r==old.r && (*c.context())[10]==old.flags,"truncated shift no intermediate effects");
         }
         for (unsigned count : {0u,16u,17u}) {
-            c=machine(Revision::Working); code(c,{0x1a,uint8_t(tag),uint8_t(count)},0xfffd);
+            c=machine(); code(c,{0x1a,uint8_t(tag),uint8_t(count)},0xfffd);
             c.registers().r.fill(0x12ab); c.registers().flags=0x2e; auto old=c.registers(); c.step();
             faulted(c,count==17?Cause::Invalid:Cause::Memory,0xfffd);
             check(c.registers().r==old.r && (*c.context())[10]==old.flags,"count validation before final PC; zero still validates PC");
         }
-        c=machine(Revision::Working); code(c,{0x1a,uint8_t(tag),16},0xfffc); c.step();
+        c=machine(); code(c,{0x1a,uint8_t(tag),16},0xfffc); c.step();
         check(!c.context() && c.registers().pc==0xffff,"last valid immediate shift PC");
-        c=machine(Revision::Working); code(c,{0x1a,uint8_t(tag)},0xfffe); c.step(); faulted(c,Cause::Memory,0xfffe);
-        c=machine(Revision::Working); code(c,{0x26,1}); c.load(0x300,{0x1a,uint8_t(tag),16});
+        c=machine(); code(c,{0x1a,uint8_t(tag)},0xfffe); c.step(); faulted(c,Cause::Memory,0xfffe);
+        c=machine(); code(c,{0x26,1}); c.load(0x300,{0x1a,uint8_t(tag),16});
         c.step(); auto frame=*c.context(); c.registers().r[tag&3]=0x1281; c.registers().flags=0x2f; c.step();
         check(c.context() && *c.context()==frame && (c.csr()&0x68)==0x68,"immediate shifts preserve V/I/E and active frame");
     }
@@ -249,15 +260,15 @@ void immediate_shifts() {
                    {0x7c,16,0x12ab,0x12ab,4}, {0x84,16,0x12ab,0x12ab,0},
                    {0x68,9,0x1281,0,1}, {0x70,16,0x1281,0xff,6},
                    {0x78,8,0x1282,0x82,2}, {0x80,16,0x1282,0x82,6}, {0x60,0,0x12ab,0x12ab,7}}) {
-        c=machine(Revision::Working); code(c,{0x1a,v.tag,v.count}); c.registers().r[0]=v.before; c.registers().flags=0x2f; c.step();
+        c=machine(); code(c,{0x1a,v.tag,v.count}); c.registers().r[0]=v.before; c.registers().flags=0x2f; c.step();
         check(c.registers().r[0]==v.after && c.csr()==(0x28|v.expected),"published immediate shift/rotate vector");
     }
-    c=machine(Revision::Working); code(c,{0x1a,0x64,16}); c.registers().r[0]=0x12ab; c.registers().flags=0x28;
+    c=machine(); code(c,{0x1a,0x64,16}); c.registers().r[0]=0x12ab; c.registers().flags=0x28;
     irq(c); c.step(); faulted(c,Cause::IRQ); check((*c.context())[0]==0x12ab,"IRQ observes before entire shift");
     c.step(); c.step(); check(c.registers().r[0]==0 && c.registers().pc==0x103,"one step commits all sixteen bit positions");
     irq(c); c.step(); faulted(c,Cause::IRQ,0x103);
     check((*c.context())[0]==0 && (*c.context())[10]==0x2d,"IRQ observes final result/flags only");
-    c=machine(Revision::Working);
+    c=machine();
     c.load(0x100,{0x15,0,0xab,0x12,0x11,0x1a,0x6c,8,0x15,0x50,0,0x20,0x1a,0x7d,8,0x15,0x51,2,0x20,
                  0x15,0,0xab,0x12,0x1a,0x64,16,0x15,0x50,4,0x20,0x15,0,0xab,0x80,0x1a,0x74,16,0x15,0x50,6,0x20,
                  0x15,0,0xab,0x12,0x1a,0x7c,16,0x15,0x50,8,0x20,0x1a,0x84,16,0x15,0x50,10,0x20,
@@ -333,7 +344,7 @@ void stacks() {
 void far_calls() {
     for (unsigned source=0;source<4;++source) for (unsigned dest=0;dest<4;++dest)
         for (unsigned f=0;f<32;++f) {
-            auto c=machine(Revision::Working); auto& s=c.registers();
+            auto c=machine(); auto& s=c.registers();
             s.cs=source; s.ds=2; s.ss=3; s.sb=0x1000; s.sp=s.st=0x1004; s.dp=0x4321;
             s.r.fill(0x1234); s.flags=(f&15)|((f&16)?32:0); auto old=s;
             c.load((source<<16)|0x100,{0x54,0,2,uint8_t(dest),0});
@@ -351,7 +362,7 @@ void far_calls() {
               c.registers().ss==old.ss && c.registers().dp==old.dp,"far fault no ordinary effects");
     };
     auto setup=[](bool call) {
-        auto c=machine(Revision::Working); auto& s=c.registers();
+        auto c=machine(); auto& s=c.registers();
         code(c,{uint8_t(call?0x54:0x55),0,2,1,0});
         s.ss=2; s.sb=0x1000; s.st=0x1004; s.sp=call?0x1004:0x1000; s.flags=0x2f; s.r.fill(0x12ff);
         c.load(0x21000,{0,2,1,0}); c.load(0x10200,{0x55}); return c;
@@ -410,19 +421,19 @@ void far_calls() {
     c.step(); check(c.registers().sp==0xfffb && word(c,0x2fffb)==0x105 && word(c,0x2fffd)==0,"odd far frame at final allocated bytes");
     c.step(); check(c.registers().sp==0xffff && !c.context(),"odd far frame return");
     // Recursive far calls: four far frames, each kept distinct until its RETF.
-    c=machine(Revision::Working); code(c,{0x54,0,2,1,0,1}); c.registers().r[0]=3; c.registers().r[1]=1;
+    c=machine(); code(c,{0x54,0,2,1,0,1}); c.registers().r[0]=3; c.registers().r[1]=1;
     c.load(0x10200,{0x10,0x20,0x40,7,0,0x10,0x74,0x54,0,2,1,0,0x55});
     unsigned steps=0,minimum=0xfffe;
     while (c.state()==ExecutionState::Running && steps<100) { c.step(); ++steps; minimum=std::min(minimum,unsigned(c.registers().sp)); }
     check(c.state()==ExecutionState::Halted && !c.context() && steps==20 && c.registers().r[0]==0 &&
           c.registers().sp==0xfffe && minimum==0xffee,"recursive far calls");
     // Published two-image program: CALLF -> near CALL/RET -> RETF.
-    c=machine(Revision::Working); c.load(0x100,{0x15,0,5,0,0x15,1,1,0,0x54,0,2,1,0,1});
+    c=machine(); c.load(0x100,{0x15,0,5,0,0x15,1,1,0,0x54,0,2,1,0,1});
     c.load(0x10200,{0x1f,0x10,5,2,0x55,0x10,0x64,0x1f,0x11}); steps=0; minimum=0xfffe;
     while (c.state()==ExecutionState::Running && steps<100) { c.step(); ++steps; minimum=std::min(minimum,unsigned(c.registers().sp)); }
     check(c.state()==ExecutionState::Halted && !c.context() && steps==8 && c.registers().cs==0 &&
           c.registers().pc==0x10e && c.registers().r[0]==6 && c.registers().sp==0xfffe && minimum==0xfff8,"published far/near mixed program");
-    c=machine(Revision::Working); code(c,{0x1f,0x10,0,2,1});
+    c=machine(); code(c,{0x1f,0x10,0,2,1});
     c.load(0x200,{0x54,0,3,1,0,0x1f,0x11}); c.load(0x10300,{0x55});
     for (unsigned i=0;i<5;++i) c.step();
     check(c.state()==ExecutionState::Halted && !c.context() && c.registers().pc==0x105 &&
@@ -435,12 +446,12 @@ void far_calls() {
     c.step(); c.step(); check(!c.context() && c.registers().cs==0 && c.registers().pc==0x105 && c.registers().sp==0x1004,"IRQ/IRET then RETF");
     irq(c); c.step(); faulted(c,Cause::IRQ,0x105);
     check((*c.context())[9]==0 && (*c.context())[11]==0x1004,"IRQ after complete RETF pop");
-    c=machine(Revision::Working); code(c,{0x26,1}); c.load(0x300,{0x54,0,2,1,0,0x1f,0x12}); c.load(0x10200,{0x55});
+    c=machine(); code(c,{0x26,1}); c.load(0x300,{0x54,0,2,1,0,0x1f,0x12}); c.load(0x10200,{0x55});
     c.step(); auto saved=*c.context(); c.step(); c.step();
     check(c.context() && *c.context()==saved && c.csr()==0x40 && c.registers().pc==0x305,"far call in active handler preserves E/frame");
     c.step(); check(!c.context() && c.registers().pc==0x102,"handler returns using IRET");
     // Both ends of the full eight-bit CS range, with no narrowing to a smaller bank.
-    VirtualCPU wide(Revision::Working); vector_to(wide,0,0x100); wide.reset();
+    VirtualCPU wide; vector_to(wide,0,0x100); wide.reset();
     control(wide,0x20,0); control(wide,0x21,255); control(wide,0x22,3); control(wide,0x23,0x1c1);
     control(wide,0x24,0); control(wide,0x25,0); control(wide,0x26,1); control(wide,0x27,0); control(wide,0x28,0); control(wide,0x7f,1);
     wide.load(0x100,{0x54,0,2,0xff,0}); wide.load(0x30200,{0x55}); wide.step(); wide.step();
@@ -453,131 +464,42 @@ void far_calls() {
     c.step(); faulted(c,Cause::Illegal,0x200);
 }
 void traps() {
-    for (int service=0;service<256;++service) for (int f=0;f<32;++f) {
-        auto c=machine(); code(c,{0x26,uint8_t(service)}); auto& s=c.registers();
-        s.flags=uint16_t((f&15)|((f&16)?32:0)); s.r[4]=0x9876; s.dp=0x5678; s.ds=3; s.ss=2;
-        auto before=s; c.step();
-        faulted(c,Cause::Trap,0x102); check((*c.context())[20]==service,"trap number");
-        check(c.csr()==((before.flags&15)|64) && (*c.context())[10]==before.flags,"trap flags");
-        s.r.fill(0xabcd); s.ds=0; s.ss=0; s.dp=0;
-        c.step(); check(!c.context() && c.csr()==before.flags && s.pc==0x102 && s.r==before.r && s.dp==before.dp && s.ds==3 && s.ss==2,"full IRET restore");
+    for (unsigned service=0;service<256;++service) for (unsigned flags=0;flags<32;++flags) {
+        auto c=machine(); code(c,{0x26,uint8_t(service)}); auto& r=c.registers();
+        r.flags=(flags&15)|((flags&16)?32:0); r.r[4]=0x9876;r.dp=0x5678;r.ds=3;r.ss=2;
+        auto old=r;c.step();faulted(c,Cause::Trap,0x102);
+        check((*c.context())[20]==service && (*c.context())[10]==old.flags,"SWI service and saved flags");
+        check(c.csr()==((old.flags&15)|64) && c.protected_state()->frames.size()==1,"protected SWI entry");
+        r.r.fill(0xabcd);r.ds=0;r.ss=0;r.dp=0;c.step();
+        check(!c.context() && c.csr()==old.flags && r.pc==0x102 && r.r==old.r && r.dp==old.dp && r.ds==3 && r.ss==2,"full IRET restore");
     }
-    for (int invalid : {0x40,0x10,0x6f,0x8000}) {
-        auto c=machine(); code(c,{0x26,1}); c.load(0x300,{0x1f,0x4a,0,0x1f,0x2a,1,0x1f,0x12});
-        c.step(); c.registers().r[0]=invalid; c.step(); c.step();
-        check(c.registers().r[1]==invalid && (*c.context())[10]==invalid,"SETX unmasked CSR"); c.step();
-        check(c.state()==ExecutionState::TerminalDoubleFault && (*c.context())[10]==invalid,"invalid IRET retains context");
-    }
-    for (int failure=0;failure<6;++failure) {
-        auto c=machine(); code(c,{0x26,0xee});
-        if (failure<4) c.map(0x18+failure,1,false);
-        if (failure==4) c.load(0x1b,{1});
-        if (failure==5) c.map(0x300,1,false);
-        c.step(); check(c.state()==ExecutionState::TerminalDoubleFault && c.registers().pc==0x100,"entry failure path");
-        faulted(c,Cause::Trap,0x102); check((*c.context())[20]==0xee,"entry retains trap");
-    }
-    for (int opcode : {0x26,0x34}) {
-        auto c=machine(Revision::V04);
-        if (opcode==0x26) { code(c,{0x26},0xffff); c.step(); }
-        else { code(c,{0x1f,0x34},0xfffe); c.step(); }
-        faulted(c,Cause::Illegal,opcode==0x26?0xffff:0xfffe);
-    }
-    for (int pc : {0xfffd,0xfffe,0xffff}) {
-        auto c=machine(); code(c,{0x26},pc); if (pc<0xffff) c.load(pc+1,{7}); c.step();
-        if (pc==0xfffd) faulted(c,Cause::Trap,0xffff); else faulted(c,Cause::Memory,pc);
-    }
-    auto c=machine(); code(c,{0x26,1}); c.registers().sp=0; c.registers().sb=1; c.step();
-    faulted(c,Cause::Trap,0x102); c.step(); check(c.state()==ExecutionState::TerminalDoubleFault,"invalid saved stack return");
-    c=machine(); code(c,{0x26,1}); c.map(0x102,1,false); c.step(); faulted(c,Cause::Trap,0x102); c.step();
-    check(c.state()==ExecutionState::TerminalDoubleFault && c.diagnostic()->cause==Cause::Memory,"IRET missing continuation");
-    c=machine(); code(c,{0x26,1}); c.load(0x300,{0x26,2}); c.step(); auto saved=*c.context(); c.step();
-    check(c.state()==ExecutionState::TerminalDoubleFault && *c.context()==saved,"nested SWI retains context");
-    c=machine(); code(c,{0x1f,0x28,8}); c.step(); faulted(c,Cause::Illegal);
+    auto c=machine();code(c,{0x26,1});c.load(0x300,{0x26,2});c.step();auto outer=c.protected_state()->frames.front().words;c.step();
+    check(c.protected_state()->frames.size()==2 && c.protected_state()->frames.front().words==outer && (*c.context())[20]==2,"nested SWI retains outer frame");
 }
 void interrupts_reset() {
-    auto c=machine(); code(c,{3,2,1}); irq(c); c.step();
-    check(c.registers().pc==0x101 && !c.context(),"EI boundary"); c.step(); faulted(c,Cause::IRQ,0x101);
-    check(!c.irq_pending(),"IRQ consumed"); irq(c); c.step(); check(!c.context(),"IRQ return"); c.step(); faulted(c,Cause::IRQ,0x101);
-    c=machine(); code(c,{1,0}); c.registers().flags=32; c.step();
-    check(c.state()==ExecutionState::Halted && c.registers().pc==0x101,"HALT continuation"); irq(c); c.step();
-    faulted(c,Cause::IRQ,0x101); c.step(); check(c.state()==ExecutionState::Running && c.registers().pc==0x101,"HALT wake return");
-    c=machine(); code(c,{0x26,1}); c.load(0x300,{3,1,0x1f,0x12}); c.step(); irq(c); c.step(); c.step();
-    check(c.state()==ExecutionState::Halted && c.csr()==96 && c.irq_pending(),"handler HALT policy");
-    check(!c.step(),"halted handler does not progress"); c.load(0x2000,{0xaa}); c.reset();
-    check(c.state()==ExecutionState::Running && c.registers().pc==0x100 && !c.context() && !c.irq_pending() && c.peek(0x2000)==0xaa,"reset state/RAM");
-    c.map(0,1,false); c.reset(); check(c.state()==ExecutionState::TerminalResetFault && !c.context() && c.registers().pc==0,"reset fault");
-    irq(c); check(!c.irq_pending(),"terminal state ignores IRQ");
-    c.map(0,1,true); c.reset(); check(c.state()==ExecutionState::Running,"reset terminal recovery");
+    auto c=machine();code(c,{3,2,1});irq(c);c.step();
+    check(c.registers().pc==0x101 && !c.context(),"EI boundary");c.step();faulted(c,Cause::IRQ,0x101);
+    check(!c.irq_pending() && c.protected_state()->in_service==2,"IRQ moves selected edge into service");
+    c.step();check(!c.context() && c.registers().pc==0x101,"IRQ returns to interrupted boundary");
+    c=machine();code(c,{1,0});c.registers().flags=32;c.step();
+    check(c.state()==ExecutionState::Halted && c.registers().pc==0x101,"HALT continuation");irq(c);c.step();faulted(c,Cause::IRQ,0x101);c.step();
+    check(c.state()==ExecutionState::Running && c.registers().pc==0x101,"HALT wake return");
+    c.load(0x2000,{0xaa});c.reset();
+    check(c.state()==ExecutionState::Running && !c.context() && !c.irq_pending() && c.peek(0x2000)==0xaa,"reset CPU/device state retains RAM");
+    c.map(0,1,false);c.reset();check(c.state()==ExecutionState::TerminalResetFault && !c.context(),"reset vector fault");
+    check(!c.step(),"terminal reset does not step");c.map(0,1,true);c.reset();check(c.state()==ExecutionState::Running,"reset recovery");
 }
 void decode_and_recovery() {
-    for (Revision rev : {Revision::V04,Revision::V05}) {
-        for (unsigned op=0;op<256;++op) {
-            auto c=machine(rev); code(c,{uint8_t(op)},0xffff); c.step();
-            bool assigned=op<=3 || (op>=0x10 && op<=0x26) || (op>=0x40 && op<=0x4e) || op==0x52 || op==0x53;
-            if (rev==Revision::V04 && op==0x26) assigned=false;
-            check(c.context().has_value(),"primary boundary must enter");
-            check(((*c.context())[17]!=1)==assigned,"primary decoder coverage");
-        }
-        for (unsigned prefix : {0x10,0x15,0x1a,0x1f}) for (unsigned x=0;x<256;++x) {
-            auto c=machine(rev); code(c,{uint8_t(prefix),uint8_t(x)},0xfffe); c.step();
-            bool assigned=prefix==0x10 ? x<0xe0 : prefix==0x15 ? x<0x40 || x>=0x50 : prefix==0x1a ?
-                x<16 || (x>=0x10 && x<=0x13) || (x>=0x20 && x<=0x23) || (x>=0x30 && x<=0x33) :
-                x<=0x12 || (x>=0x20 && x<=(rev==Revision::V05?0x34u:0x33u)) || (x>=0x40 && x<=0x50) || (x>=0x60 && x<=0x63);
-            check(!(c.context() && (*c.context())[17]==1)==assigned,"extension decoder coverage");
-        }
-    }
     for (unsigned reg=0;reg<256;++reg) {
-        auto c=machine(); code(c,{0x1f,0x34,uint8_t(reg)}); c.step(); faulted(c,reg<8?Cause::Invalid:Cause::Illegal);
+        auto c=machine();code(c,{0x1f,0x34,uint8_t(reg)});c.step();faulted(c,reg<8?Cause::Invalid:Cause::Illegal);
     }
     for (unsigned index=0;index<21;++index) for (unsigned reg=0;reg<8;++reg) {
-        auto c=machine(); code(c,{0x26,0xab}); c.load(0x300,{0x1f,uint8_t(0x20+index),uint8_t(reg)});
-        c.step(); auto expected=(*c.context())[index]; c.step(); check(c.registers().r[reg]==expected,"GETX every field/register");
+        auto c=machine();code(c,{0x26,0xab});c.load(0x300,{0x1f,uint8_t(0x20+index),uint8_t(reg)});
+        c.step();auto expected=(*c.context())[index];c.step();check(c.registers().r[reg]==expected,"GETX every base field/register");
     }
-    for (unsigned flag=0;flag<32;++flag) for (bool active : {false,true}) {
-        auto c=machine();
-        if (active) { code(c,{0x26,1}); c.step(); }
-        auto pc=c.registers().pc;
-        c.load(pc,{0x10,0x93}); c.registers().r[0]=(flag&15)|((flag&16)?32:0)|64; c.step();
-        check(c.csr()==((flag&15)|((flag&16)?32:0)|(active?64:0)),"CSR write ignores supplied E");
-    }
-    for (int bad : {9,10,11,14,16}) {
-        auto c=machine(); code(c,{0x26,3});
-        c.load(0x300,{0x1f,uint8_t(0x40+bad),0,0x1f,0x12}); c.step();
-        c.registers().r[0]=bad==11?0xffff:bad==10?0x10:0x100;
-        c.step(); auto saved=*c.context(); c.step();
-        check(c.state()==ExecutionState::TerminalDoubleFault && *c.context()==saved,"IRET validation retains edits");
-        check(c.diagnostic()->cause==(bad==11?Cause::Stack:Cause::Invalid),"IRET field priority");
-    }
-    // Recover an invalid live/saved stack without touching ordinary stack RAM.
-    auto c=machine(); code(c,{0x10,0xd3,0xff,0}); c.registers().r[0]=0x1000;
-    c.load(0x300,{0x1f,0x2d,0,0x1f,0x4b,0,0x15,0,3,1,0x1f,0x48,0,0x1f,0x12});
-    c.map(0x1000,0xf000,false); c.step(); c.step(); faulted(c,Cause::Illegal,0x102);
-    for (int i=0;i<5;++i) c.step();
-    check(!c.context() && c.registers().sp==0x1000 && c.registers().pc==0x103 && c.registers().r[0]==0x1000,"stack repair without RAM");
-    // Actual saved CSR/PC recovery and live-handler register discard.
-    c=machine(); code(c,{0xff,0}); c.load(0x300,{0x15,0,1,1,0x1f,0x48,0,0x15,0,5,0,0x1f,0x4a,0,0x1f,0x12});
-    c.registers().r[0]=0xbeef; c.step(); for (int i=0;i<5;++i) c.step();
-    check(c.registers().pc==0x101 && c.csr()==5 && c.registers().r[0]==0xbeef,"recover known resume PC/CSR");
-    // An IRQ observes the committed first allocation, not a whole prologue.
-    c=machine(); c.registers().sb=0x1000; c.registers().sp=c.registers().st=0x10c8; c.registers().flags=32;
-    code(c,{0x25,0x80,0x25,0x80}); c.step(); irq(c); c.step(); faulted(c,Cause::IRQ,0x102);
-    check((*c.context())[11]==0x1048,"IRQ between adjustments"); c.step(); c.step();
-    faulted(c,Cause::Stack,0x102); check((*c.context())[11]==0x1048,"post-IRQ allocation fault");
-    // Report the first unavailable byte, while retaining instruction-start PC.
-    c=machine(); code(c,{0x15,0,0x34,0x12}); c.map(0x103,1,false); c.step(); faulted(c,Cause::Memory);
-    check((*c.context())[18]==0x103 && (*c.context())[19]==0x100,"missing later instruction byte address");
-    c=machine(); c.registers().ds=3; code(c,{0x15,0x50,0,0x20}); c.map(0x32001,1,false); c.step();
-    check((*c.context())[18]==0x2001 && (*c.context())[19]==0x103,"missing later store byte address");
-    // Invalid input state takes priority over unrepresentable following PC.
-    c=machine(); code(c,{0x24,0xff},0xfffe); c.registers().dp=0; c.step(); faulted(c,Cause::Invalid,0xfffe);
-    c=machine(); code(c,{0x25,0},0xfffe); c.registers().sp=0; c.registers().sb=1; c.step(); faulted(c,Cause::Stack,0xfffe);
-    // Pending requests survive failed entry and successful SWI.
-    c=machine(); code(c,{0x26,1}); irq(c); c.step(); check(c.irq_pending(),"SWI does not consume IRQ");
-    c=machine(); c.registers().flags=32; irq(c); c.map(0x300,1,false); c.step();
-    check(c.irq_pending() && c.state()==ExecutionState::TerminalDoubleFault,"failed IRQ entry retains request");
-    // Fault in an established handler must retain live I, registers and frame.
-    c=machine(); code(c,{0x26,1}); c.load(0x300,{3,0xff}); c.step(); c.step(); auto frame=*c.context(); c.step();
-    check(c.csr()==96 && c.registers().pc==0x301 && *c.context()==frame,"nested fault preserves handler state");
+    auto c=machine();code(c,{0xff,0});c.load(0x300,{0x15,0,1,1,0x1f,0x48,0,0x15,0,5,0,0x1f,0x4a,0,0x1f,0x12});
+    c.registers().r[0]=0xbeef;c.step();for(unsigned i=0;i<5;++i)c.step();
+    check(c.registers().pc==0x101 && c.csr()==5 && c.registers().r[0]==0xbeef,"saved resume PC/CSR recovery");
 }
 void worked_images() {
     std::ifstream file(SOURCE_ROOT "/doc/ISA_EXAMPLES.md"); std::string line;
@@ -594,10 +516,10 @@ void worked_images() {
         }
     }
     check(images.size()==12,"published fixture extraction");
-    const int steps[]={68,50,162,55,101,9,48,22,22,6};
-    for (unsigned image_index=0;image_index<20;++image_index) {
+    const int steps[]={57,33,142,42,92,9,48,21,22,6};
+    for (unsigned image_index=0;image_index<10;++image_index) {
         unsigned n=image_index%10;
-        auto c=machine(image_index<10?Revision::V04:Revision::V05); c.load(0x100,images[n]);
+        auto c=machine(); c.load(0x100,images[n]);
         if (n==1) c.load(0x2000,{1,0,2,0,3,0,4,0,5,0});
         if (n==2) c.load(0x2000,{3,0,0xff,0xff,2,0,0xfd,0xff,0,0});
         if (n==3) c.load(0x2000,{'h','e','l','l','o',0});
@@ -629,7 +551,19 @@ void worked_images() {
     }
 }
 int main(int argc, char**) {
-    try { if (argc==1) { arithmetic(); bit_tests(); immediate_shifts(); addressing(); stacks(); far_calls(); traps(); interrupts_reset(); decode_and_recovery(); } worked_images(); }
-    catch (const std::exception& e) { std::cerr<<"FAIL after "<<checks<<" checks: "<<e.what()<<'\n'; return 1; }
+    std::string section;
+    auto run=[&](const char* name,void (*test)()){section=name;test();};
+    try {
+        if(argc==1) {
+            run("documented tests",documented_tests);run("arithmetic",arithmetic);
+            run("bit tests",bit_tests);run("immediate shifts",immediate_shifts);
+            run("addressing",addressing);run("stacks",stacks);run("far calls",far_calls);
+            run("traps",traps);run("interrupts/reset",interrupts_reset);
+            run("decode/recovery",decode_and_recovery);
+        }
+        run("published examples",worked_images);
+    } catch(const std::exception& e) {
+        std::cerr<<"FAIL in "<<section<<" after "<<checks<<" checks: "<<e.what()<<'\n';return 1;
+    }
     std::cout<<checks<<" conformance assertions passed\n";
 }

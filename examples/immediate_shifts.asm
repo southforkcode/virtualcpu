@@ -1,4 +1,4 @@
-; CS=DS=SS=0, origin $0100, normal empty stack; --revision working.
+; CS=DS=SS=0, origin $0100, normal empty stack;.
 ; Results are nine words at DS:$2000..$2010; final N/C remain set by RORI.B.
 MOV.W #$12AB,r0
 MOV r0,r1

@@ -4,14 +4,16 @@
 #include <iostream>
 
 int main() {
-    vcpu::VirtualCPU cpu(vcpu::Revision::Working,0x80000);
+    vcpu::VirtualCPU cpu(0x80000);
     for (unsigned n=0;n<8;++n) {
-        unsigned target=n==0?0x100:n==5?0x1000:n==6?0x1200:n==2?0x1300:0x1400;
+        unsigned target=n==0?0x100:n==5?0x1000:n==6?0x1200:0x1800;
         cpu.load(4*n,{uint8_t(target),uint8_t(target>>8),0,0});
     }
     using namespace kernel_images;
     cpu.load(boot_origin,boot); cpu.load(irq_origin,irq); cpu.load(swi_origin,swi);
     cpu.load(memory_origin,memory); cpu.load(copy_origin,copy); cpu.load(load_context_origin,load_context);
+    cpu.load(controls_origin,controls); cpu.load(control_fault_origin,control_fault);
+    cpu.load(0xa000,control_registry);
     cpu.load(0x1400,{1}); cpu.load(0x10100,user); cpu.load(0x20100,user); cpu.reset();
     unsigned steps=0;
     while (cpu.state()==vcpu::ExecutionState::Running && steps<20000) { cpu.step(); ++steps; }

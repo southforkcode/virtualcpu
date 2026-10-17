@@ -1,35 +1,118 @@
 # Machine-readable ISA encodings
 
-The [machine-readable table](#machine-readable-table) embedded below defines the binary layouts currently consumed by the tools. The payload includes all currently assigned instructions in the [working ISA](ISA.md), including immediate ALU, protected controls, extended context and MOVU. The assembler/disassembler reads this table, and the C++ emulator generates its matching, length, revision and reserved-byte tables from it. Execution semantics remain implemented in C++; [README.md](../README.md#validation) describes validation. JSON specifies matching and operand layout; ISA.md specifies execution, faults, assembly restrictions, and commit behavior. Any discrepancy is a specification defect.
+The [machine-readable table](#machine-readable-table) embedded below defines the binary layouts currently consumed by the tools. The payload includes all currently assigned instructions in the [working ISA](ISA.md), including immediate ALU, protected controls, extended context and MOVU. The assembler/disassembler reads this table, and the C++ emulator generates its matching, length and reserved-byte tables from it. Execution semantics remain implemented in C++; [ISA.md Appendix C](ISA.md#implementation-status-and-remaining-work) is the authoritative runtime/profile and validation-status record. JSON specifies matching and operand layout; ISA.md specifies execution, faults, assembly restrictions, and commit behavior. Any discrepancy is a specification defect.
 
 The JSON block is the sole machine-readable source. There is no separate JSON documentation file. Preserve the payload and the `ISA_ENCODING_JSON_BEGIN` / `ISA_ENCODING_JSON_END` markers when editing this document.
 
 Documentation: [Architecture and conformance](ISA.md) · [Examples and design measurements](ISA_EXAMPLES.md).
 
-## Working-copy encoding requirements
+## Encoding requirements
 
 The six byte/word immediate ALU families are assigned at $80–$AF in
 [ISA.md](ISA.md#immediate-alu-instructions). Extended context access, protected
 controls, privilege metadata, and MOVU user-access transfers are assigned below.
-The embedded payload covers every current assignment. The explicit `working`
-runtime enables the protected machine; legacy modes retain their earlier contracts.
+The embedded payload covers every current assignment. Current runtime evidence is recorded in [Appendix C](ISA.md#implementation-status-and-remaining-work).
 
 | Area | Revised draft requirement | Allocation status |
 |---|---|---|
 | Existing instructions | Assigned bytes, CSR bits, B0/B1 banks and context indices 0x00–0x14 | Assigned layouts; protected semantics defined in ISA.md |
 | Mode/entry/return | U I=1; protected provenance; eight ordinary frames; failed entry/overflow is terminal | SWI imm8/IRET bytes retained; no executable emergency interface |
-| CPU control access | Readable committed descriptors, published-map state, user-access controls and one-way bootstrap action | GETC `$1F $A0–$A7 selector8`, SETC `$1F $B0–$B7 selector8`; control IDs/commands assigned in ISA.md; metadata and runtime integrated |
-| Extended context access | Saved protected state and new fault metadata | GETX `$1F $80–$87 index8`, SETX `$1F $90–$97 index8`; 21 new indices assigned; legacy GETX/SETX unchanged; metadata integrated |
-| Faults/vectors | Origin/phase/access/map/start/relevant virtual and physical address/reason record | New word IDs, numeric enums, privilege cause/vector 7, and operation classes assigned in ISA.md; runtime implemented |
-| Memory | Published/invalidate map control; whole-descriptor publication; U-rights user-access transfer | Controls and MOVU `$27` descriptor family assigned; metadata/runtime implemented; software generations are not hardware map bits |
-| PIC/timer/MMIO | 16 sources, timer source 0, atomic snapshot/configuration/ACK | `minimal-v1` physical `$FF0000–$FF00FF` assigned in Chapter 7; ordinary MOV, no CPU-control mirror; runtime implemented |
-| Immediate ALU | ADDI, SUBI, CMPI, ANDI, ORI, XORI; B0 only, byte/word width | $80–$AF assigned; metadata and runtime integrated |
-| Other compact instructions | rel8, B1 simm6, SP uimm8; defer post-increment | Symbolic formats below, not assigned byte values |
+| CPU control access | Readable committed descriptors, published-map state, user-access controls and one-way bootstrap action | GETC `$1F $A0–$A7 selector8`, SETC `$1F $B0–$B7 selector8`; control IDs/commands assigned in ISA.md; layouts included in the payload |
+| Extended context access | Saved protected state and new fault metadata | GETX `$1F $80–$87 index8`, SETX `$1F $90–$97 index8`; 21 new indices assigned; base GETX/SETX included; layouts included in the payload |
+| Faults/vectors | Origin/phase/access/map/start/relevant virtual and physical address/reason record | New word IDs, numeric enums, privilege cause/vector 7, and operation classes assigned in ISA.md; architectural contract assigned |
+| Memory | Published/invalidate map control; whole-descriptor publication; U-rights user-access transfer | Controls and MOVU `$27` descriptor family assigned; layouts included in the payload; software generations are not hardware map bits |
+| PIC/timer/MMIO | 16 sources, timer source 0, atomic snapshot/configuration/ACK | `minimal-v1` physical `$FF0000–$FF00FF` assigned in Chapter 7; ordinary MOV, no CPU-control mirror; architectural contract assigned |
+| Immediate ALU | ADDI, SUBI, CMPI, ANDI, ORI, XORI; B0 only, byte/word width | $80–$AF assigned; layouts included in the payload |
+| Compact B1 displacement | Signed -32..31 in existing a=0 descriptor; disp16 fallback | Assigned , no new primary or secondary tags |
+| Short relative branches | All fifteen rel8 predicates, `.S`/`.W` and iterative relaxation | Assigned working `$60–$6E`, `$6F` reserved; layouts in payload |
+| Compact SP memory | Unsigned 0..255 plus off16 fallback, both widths/directions | Assigned working `$28`, 32 secondary tags; layouts in payload |
+| Remaining extensions | Defer post-increment / register-to-pointer arithmetic | No additional assignments |
 
 Unassigned primary bytes and reserved fields are illegal as soon as they are
 known. Do not fetch operands after an unassigned primary opcode. Assigned
 immediates require the selected byte/word operand to be fetched completely before
 execution; missing operand bytes are fetch faults.
+
+### Assigned compact B1 displacements
+
+Working MOV B1 short forms use `$15 1ds0zrrr ddddddpp`: pp selects r4–r7,
+dddddd is a signed six-bit displacement (-32..31). Long forms retain
+`$15 1ds1zrrr 000000pp disp_lo disp_hi` and signed disp16.  Long descriptor checks
+remain unconditional and occur before fetching displacement. MOVU is unchanged.
+
+Assemblers select short for working offsets -32..31 inclusive and long otherwise;
+ Raw long forms are legal even for zero and
+other short values; disassembly canonicalizes to the shortest available assembly.
+For example, `MOV.W [r4+2],r0` changes from `15 90 00 02 00` (five bytes) to
+`15 80 08` (three) with the same successful load and flags. Base/value aliases
+sample the original registers; widened addresses, protection, atomic stores and
+MMIO transactions follow [ISA.md](ISA.md#b1-indirect-forms-bit-7--1).
+
+### Assigned short branches
+
+Working rel8 uses `$60+condition disp8`, two bytes. Conditions 0–14 have the
+same order and flags as existing `$40–$4E` rel16; `$6F` is reserved and illegal
+before operand fetch.  Fifteen
+new primary values are assigned and one unassigned value is held for the block;
+no secondary tag is consumed. Schema 5 describes signed one-byte operands without version gates.
+
+The target is in the input CS and the displacement is signed -128..127 from the
+selected end, computed in a wide type. Complete fetch precedes predicate selection.
+Taken targets require representability, descriptor execute interval/rights and
+RAM backing; untaken branches do not probe discarded targets. Intermediate
+next=$10000 is allowed only for a taken branch whose selected target is valid.
+No instruction byte wraps. Flags, registers and precise fault/retirement rules
+are identical to rel16. See [normative branch semantics](ISA.md#bcc-bra--conditional-or-unconditional-relative-branch).
+
+`.S` forces rel8 and `.W` forces rel16; working unsuffixed forms start long.
+Initially account for forced-short instructions at length two. Recompute all
+positions and labels, then shorten every eligible automatic long branch from
+its candidate two-byte end, including its own effect on forward labels. Repeat
+to a fixed point; only then validate forced-short reach and final image bounds.
+A long-first trial layout may cross the segment if the final image fits. Relocated
+CALL/JS/CALLF labels use that same final layout. Forced-long never shrinks.
+
+Numeric operands are absolute target offsets and do not relocate. A preceding
+shrink can therefore move a previously eligible numeric branch out of range.
+After convergence, pin any such automatic numeric branches long and restart
+from the long trial layout; pins accumulate, guaranteeing termination. This may
+conservatively retain a numeric long branch. No emitted displacement is truncated
+or allowed to remain out of range. A forced-short numeric target is checked after
+the final layout and rejects if it does not fit. Use labels for code that moves.
+
+Disassembly emits `.S` or `.W`  to retain exact branch width on
+reassembly. For example `BRA.S $100` at
+$100 is `6E FE`; deliberate `BRA.W $100` is `4E FD FF`. Ordinary `BRA label`
+selects the short form when the final displacement fits.
+
+### Assigned compact SP offsets
+
+Working uses `$28 0d11zrrr off8`, three bytes: d selects load/store, z selects
+word/byte, and rrr selects r0–r7 exactly as in existing SP MOV. The second byte
+is $30–$3F or $70–$7F; the other 224 values reject before offset fetch.  The offset is unsigned 0..255 regardless of
+transfer width. Offset $FF means +255; 256 uses the existing four-byte
+`$15 0d11zrrr lo hi` form and cannot truncate to zero.
+
+Both forms sample old inputs, form a widened SP+unsigned(offset), check the same
+SB≤SP≤ST invariant and whole allocated slot, then apply SS rights/kind/backing
+and selected following-PC validation. Byte loads zero-extend, stores use original
+source bits, SP/bounds/flags are unchanged, failed transfers are atomic, and no
+SP access may perform MMIO. [Normative semantics](ISA.md#28-compact-sp-memory-transfers)
+include fault order, exclusive ST and partial words.
+
+Select off8 for working 0..255 and off16 for 256..65535; reject negative/out-of-range
+assembly. Raw long 0..255 forms stay legal and
+noncanonical. Disassembly reports their four-byte length, while working reassembly
+selects three; retain raw images when exact noncanonical bytes are needed. MOV
+`.B`/`.W` selects data width and does not force long addressing.
+
+One primary and a sixth escape table are assigned: ext28 has 32 matching secondary
+values and 224 reserved values. Existing ext15 tags and all assigned bytes remain
+unchanged. Primary totals are 111 assigned / 145 unassigned, with 144 outside the
+held $6F branch slot. Metadata schema 5 already supports this dispatch, unsigned
+one-byte operand; seven total decode tables are generated.
+The [current report](ISA_EXAMPLES.md#current-workload-measurements) measures actual
+code sizes, instruction counts and addressing distributions.
 
 ### Assigned immediate ALU layouts
 
@@ -59,8 +142,7 @@ See ISA.md for full semantics, atomic fetch/PC failure behavior and examples.
 
 ### Assigned protected control layouts
 
-GETC/SETC are enabled in the embedded JSON, production assembler/disassembler,
-and emulator when the explicit working mode is selected:
+GETC/SETC use the following assigned tags:
 
 | Instruction | Bytes | Encoding |
 |---|---:|---|
@@ -85,10 +167,9 @@ r2; `1F B0 7F` executes the command in r0. See the
 [binary reference](ISA.md#protected-control-encoding) for exact reserved/fetch cases.
 
 The working `$1F` table now has 93 assigned / 163 unassigned second-byte values;
-the payload represents that same map (legacy availability remains 61 / 195). GETC/SETC add `$A0–$A7` and `$B0–$B7`;
+the payload represents that same map. GETC/SETC add `$A0–$A7` and `$B0–$B7`;
 extended GETX/SETX below add `$80–$87` and `$90–$97`. All other positions in
-`$80–$BF` remain illegal. No primary value was consumed, and no legacy tag or
-context selector was changed.
+`$80–$BF` remain illegal. These access forms consume no primary value.
 
 ### Assigned extended context layouts
 
@@ -99,11 +180,11 @@ context selector was changed.
 
 rn selects any r0–r7. [The extended context table](ISA.md#extended-saved-context)
 assigns 21 new words: three writable saved process/user-access controls plus
-eighteen read-only provenance/event/fault words. Together with legacy context,
-42 words are readable and twenty writable. Legacy words have only their original
+eighteen read-only provenance/event/fault words. Together with base context,
+42 words are readable and twenty writable. Base words have their own
 encoding; old indices under an extended tag are illegal. Assembly chooses the
 encoding family from the assigned context name/index, without changing existing
-source or bytes. There is no widened legacy five-bit field or extended alias.
+source or bytes. There is no widened base five-bit field or extended alias.
 
 Unknown/read-only write indices are illegal on byte 2, before privilege and
 active-context checks. Reserved secondary tags are illegal on byte 1; missing
@@ -117,10 +198,10 @@ Privilege has cause/vector 7 at kernel 0:`$001C–$001F`. Its operation-class va
 and the memory-origin/phase/access/reason enums are assigned in
 [Chapter 5](ISA.md#privilege-exception-record). NONE is zero in every enum;
 metadata initializes per event, memory words clear on nonmemory entries,
-and legacy physical address semantics remain unchanged. Examples:
+and physical address semantics remain unchanged. Examples:
 `GETX xprocess_map,r2` = `1F 82 20`, `SETX r7,xuaccess_segment` = `1F 97 22`,
 `GETX xpriv_class,r0` = `1F 80 29`. These assignments are present in the payload
-and enabled only in working mode.
+and assigned.
 
 ### Assigned user-access layouts
 
@@ -152,12 +233,12 @@ and fault-priority behavior. A legal U MOVU gets Privilege/USER_ACCESS=10. K
 operand failures use Memory Access/UACCESS/OPERAND; K code/next-PC failures use
 KERNEL/FETCH or RESULT_PC instead. No partial transfer commits on failure.
 
-The payload integrates ext27 as the sixth decode table. Generated table counts
-are derived from metadata. Legacy modes reject `$27` before descriptor fetch.
+The payload retains ext27 as the sixth decode table and adds ext28 as the seventh. Generated table counts
+are derived from metadata.
 
-### Assigned test layouts and runtime modes
+### Assigned test layouts
 
-[The TST/TSTI review](ISA_EXAMPLES.md#test-instruction-review-and-measurements) accepts the following B0-only forms:
+[The TST/TSTI review](ISA_EXAMPLES.md#current-workload-measurements) accepts the following B0-only forms:
 
 | Form | Bytes | Layout |
 |---|---:|---|
@@ -167,18 +248,13 @@ are derived from metadata. Legacy modes reject `$27` before descriptor fetch.
 | TST.W rd / TST rd | 2 | Existing `OR rd,rd`: `$10`, `$20+5*rd` |
 
 Tests preserve all register bits and C/V/I/E, setting width-specific N/Z only.
-Immediate ranges match ANDI; default width is word. Twelve tags are assigned;
-The tests consume twelve tags; with the forty shift/rotate tags below,
-`ext1a` is now 80 assigned / 176 free. No primary encoding changes.
+Immediate ranges match ANDI; default width is word. The twelve test tags and
+forty shift/rotate tags below give `ext1a` 80 assigned / 176 free. No primary encoding changes.
 
-Metadata schema **3** requires explicit runtime gating and selector-byte validation. `isa_revision="0.5"`
-identifies the legacy baseline; `runtime_modes` maps `0.4`/`0.5`/`working` to
-internal availability levels 4/5/6, which are not new guest ISA version numbers.
-`minimum_runtime="working"` gates each new test entry. Legacy modes reject its
-second byte before immediate fetch. The working mode implements only
-legacy 0.5 plus tests, CALLF/RETF and immediate shifts/rotates, and does not enable the other assigned protected,
-immediate ALU, or device families. TST.W aliases existing OR in all modes and
-canonical disassembly remains OR. Consumers supporting only schema 1/2 must reject schema 3. Its
+Schema 5 covers all assigned encodings without runtime-version gates. Register,
+selector and reserved-bit validation apply to every decode. The
+[status record](ISA.md#implementation-status-and-remaining-work) identifies executed evidence.
+TST.W aliases OR; canonical disassembly remains OR. Consumers must validate schema 5 before decoding. Its
 `encoding_checks.allowed_values` lists restrict selectors as soon as fetched;
 ignoring them would violate decode-before-privilege ordering.
 
@@ -199,8 +275,7 @@ Unsuffixed source is `.W`. Negative/out-of-range literals, register counts,
 other banks/suffixes and wrong arities are rejected. The third byte is ordinary
 operand data: raw counts 17–255 raise Invalid State after full fetch and before
 following-PC validation. Missing count is a fetch fault; reserved neighboring
-`$5F/$88` tags are illegal without count fetch. Legacy modes reject all forty
-tags at byte 1; every entry uses `minimum_runtime="working"`.
+`$5F/$88` tags are illegal without count fetch.
 
 Count zero writes neither the destination nor any flag (including the byte form's
 upper register bits), but still requires a representable following PC. Positive
@@ -241,13 +316,12 @@ no mode/map authority change. Existing word fault metadata is retained: each
 frame word is an operand probe of width 2. CALLF saves a representable next;
 RETF validates the saved target instead of unused sequential next.
 
-Both entries use schema-3 `minimum_runtime="working"`. Legacy modes reject
-their primary byte before fetching operands. No new decode table or instruction
+No new decode table or instruction
 longer than five bytes is needed; four immediate bytes fit the existing operand
 extractor. The staged RAM store can now hold the complete four-byte return frame.
 Flat labels resolve to numeric offsets in segment zero; reject a CALLF label
 at offset $10000 instead of silently treating it as segment 1. Use packed
-literals for other segments. The assembler provides no relocation/linker service.
+literals for other segments. The assembler provides no object-file relocation or linker service.
 
 ### Assigned PIC/timer machine interface
 
@@ -273,16 +347,15 @@ assigned xirq_source context word. ACK and IRET are independent.
 
 [The host contract](ISA.md#deterministic-host-events-and-replay) assigns ordered
 boundary events, `vcpu-replay` JSONL version 1, exact error codes, and recorded
-idle advancement. These are new machine interfaces, not behavior already
-provided by the legacy source-less request_irq API. No primary or secondary
+idle advancement. These interfaces are the host event contract. No primary or secondary
 opcode is consumed, and the embedded instruction metadata is unchanged.
 
 ## Opcode allocation budget
 
 **Assignments and remaining planning capacity.** The [assigned allocation ledger](ISA.md#opcode-allocation-ledger)
 accounts for all 256 primary values and each existing escape table. The working
-ISA has 95 assigned primary values and 161 available values. The embedded tool
-payload has the same 95 assigned primary values (44 available in legacy 0.5). The immediate ALU allocation remains
+ISA has 111 assigned primary values and 145 available values (including held `$6F`). The embedded tool
+payload has the same 111 assigned primary values (all for the working ISA). The immediate ALU allocation remains
 `$80–$AF`: 48 values, 18.75% of primary space, with two-byte byte operations and
 three-byte word operations.
 
@@ -300,9 +373,9 @@ reserved-bit patterns, not executable alternate forms.
 | Control commands, map/descriptor publication, bootstrap | Assigned writes to command selector `$7F` through SETC | 0 beyond control access | Eight assigned command values; not another primary family per command | 3 per control transfer; complete sequences may need several transfers |
 | User-access byte/word loads/stores | MOVU `$27`, `dazrrr00`, `000000pp`, optional disp16; now assigned | 1, already assigned | 64 valid second-byte patterns; 192 remain reserved; third byte selects four B1 bases and has six reserved bits | 3 without displacement; 5 with disp16 |
 | Minimum PIC/timer | Assigned `minimal-v1` MMIO `$FF0000–$FF00FF` via existing MOV forms | 0 | MMIO addresses/register fields, not instruction opcode space | Existing MOV lengths |
-| rel8 branches | One aligned 16-value primary block; fifteen predicates matching rel16 order | 16 budgeted: 15 executable candidates and one reserved condition slot | One signed displacement byte | 2 |
-| Compact B1 simm6 | Existing `$15` a=0 forms; descriptor `ddddddpp` | 0 | Reuse upper six bits of the third byte for the existing 64 short-form secondary tags; no new secondary tags | 3; retain 5-byte disp16 fallback |
-| Compact SP uimm8 | New symbolic SP8 primary, `0d11zrrr`, off8 | 1 | 32 valid second-byte patterns; 224 remain reserved | 3; retain 4-byte off16 fallback |
+| rel8 branches | Assigned `$60–$6E`, `$6F` held reserved; same predicate order as rel16 | 15 assigned plus one reserved block position | One signed displacement byte | 2 |
+| Compact B1 simm6 | Assigned working: existing `$15` a=0 forms; descriptor `ddddddpp` | 0 | Reuse upper six bits of the third byte for the existing 64 short-form secondary tags; no new secondary tags | 3; retain 5-byte disp16 fallback |
+| Compact SP uimm8 | Assigned working `$28`, `0d11zrrr`, off8 | 1, already assigned | 32 valid second-byte patterns; 224 remain reserved | 3; retain 4-byte off16 fallback |
 | Far call and far return | Assigned CALLF `$54` packed target and RETF `$55` | 2, already assigned | Four-byte PC/CS return frame; same mode/map | 5 for call; 1 for return |
 | TST.B / TST.W | Assigned `$1A $40–$43` byte tags; word OR-self alias | 0 | Four assigned tags; no new word tags | 2 |
 | TSTI.B / TSTI.W | Assigned `$1A $44–$4B` plus immediate | 0 | Eight assigned tags, four per width | 3 for byte; 4 for word |
@@ -311,42 +384,32 @@ reserved-bit patterns, not executable alternate forms.
 The assigned user-access descriptor uses configured uaccess_segment and therefore
 needs no ordinary CS/DS selector bit. B0-only test support is accepted;
 expansion to other banks requires separate evidence. TST.W aliases `OR rd,rd`,
-releasing four tags from the original conservative budget.
+consuming no separate word-test tags.
 
-For B1 simm6, the 64 existing a=0 second-byte tags currently accept four base
-descriptor values each. The candidate would accept all 256 values, adding
-`64 × (256−4) = 16,128` three-byte combinations with **zero** new primary or
-secondary tags. Existing a=1 disp16 forms retain their reserved high descriptor
-bits. This is a semantic extension of a reserved operand field and requires
-explicit adoption and compatible tool-mode selection.
+For B1 simm6, 64 a=0 second-byte tags accept 256 descriptors each, giving
+16,384 three-byte forms. The a=1 disp16 forms require zero reserved high descriptor
+bits. Both forms share the existing primary and secondary table.
 
 ### Cumulative capacity projection
 
 This projection charges whole blocks, including intentionally reserved holes.
 “Remaining” means capacity uncommitted by this planning scenario. Actual assigned
-primary counts are 95/161; MOVU and CALLF/RETF are already charged. Control/context
+primary counts are 111/145; MOVU, CALLF/RETF, compact SP and fifteen rel8 values are already charged. Control/context
 accesses have consumed 32 existing-secondary positions but no primary values.
 
 | Step | Primary charge at this step | Primary capacity remaining | Secondary capacity remaining outside budgeted blocks |
 |---|---:|---:|---|
-| Current working map, including controls, MOVU, tests and far calls | — | 161 | `$1F`: 163; `$1A`: 176; `$27`: 192 |
-| Hold remaining reserved control/context block positions | 0 | 161 | `$1F`: 131; `$1A`: 176; `$27`: 192 |
-| Map commands and bootstrap within control access | 0 | 161 | Unchanged |
-| User-access family already assigned | 0 | 161 | Unchanged |
-| PIC/timer through MMIO | 0 | 161 | Unchanged |
-| rel8 branch block, including reserved condition slot | 16 | 145 | Unchanged |
-| Compact B1 descriptor reuse | 0 | 145 | Unchanged |
-| Compact SP family | 1 | 144 | Unchanged |
-| Far call/return primaries already assigned | 0 | 144 | Unchanged |
-| TST byte tags / word alias already assigned | 0 | 144 | Unchanged |
-| TSTI byte/word tags already assigned | 0 | 144 | Unchanged |
-| Immediate-count shift/rotate tags already assigned | 0 | **144** | `$1F`: **131**; `$1A`: **176** |
+| Current working map, including all three compact families | — | 145 | `$1F`: 163; `$1A`: 176; `$27`: 192; `$28`: 224 |
+| Hold reserved rel8 condition `$6F` | 1 held, not assigned | 144 | Unchanged |
+| Hold remaining reserved control/context block positions | 0 | **144** | `$1F`: **131**; `$1A`: **176**; `$27`: **192**; `$28`: **224** |
+| Existing commands, MOVU, devices, B1/SP compact, branches, far calls, tests and shifts | 0, already charged | 144 | Unchanged |
 
-Thus this scenario budgets 17 additional primary values, holds 32 reserved `$1F`
-positions (64 including the 32 assigned access tags), and accounts for twelve assigned test tags plus forty assigned `$1A` shift tags
-(52 positions total). Sixteen future primary values would become matching
-instructions and one branch slot would remain reserved, giving 111 assigned and
-145 unassigned primary values, of which 144 are outside the budgeted blocks.
+All three reviewed compact families are assigned. No additional primary for SP
+remains to be charged: it brings the actual map to 111 assigned / 145 unassigned,
+with 144 unassigned values outside held $6F. Twelve test tags and forty immediate-
+shift tags are assigned under `$1A` (52 total). Any future register-to-pointer
+proposal requires a separate measured adoption and allocation review.
+
 Likewise, the control block's 32 reserved-bit patterns are unavailable to other
 families in this scenario even though they remain illegal, so its 64-position
 budget exceeds its 32 matching tags. Neither reserved-hole count is a new grant.
@@ -358,8 +421,8 @@ aligned 64-value blocks before control assignment. `$80–$BF` now contains its
 completely free 64-value block. `$1A` has ample disjoint free eight-value groups.
 Choose the remaining actual nonoverlapping tags only at assignment review. All
 four existing
-escape primaries and their assigned tags are preserved, and MOVU adds a fifth
-escape. The 192 reserved MOVU descriptor values remain available only to a
+escape primaries and their assigned tags are preserved; MOVU adds the fifth
+and compact SP the sixth escape. The 192 reserved MOVU descriptor values remain available only to a
 reviewed future extension of that family. The small `$10` and
 `$15` spare regions need not be consumed to make the planned families fit.
 
@@ -369,7 +432,7 @@ reviewed future extension of that family. The small `$10` and
 |---|---|---|
 | Retain assigned immediate ALU primaries | Existing 48 primary values | `.B` 2 / `.W` 3 bytes, direct opcode register selection; no migration or compatibility change |
 | Hypothetical immediate ALU under one new descriptor family | One primary plus descriptor space, instead of the existing 48 | `.B` 3 / `.W` 4 bytes; another descriptor decode and incompatible replacement of assigned bytes. Not proposed for adoption |
-| Protected access under existing escape | Zero new primaries; 64-position secondary budget | Three bytes and a new selector namespace; preserves legacy GETX/SETX. A new primary escape could also be three bytes but would spend one primary unnecessarily at present |
+| Protected access under existing escape | Zero new primaries; 64-position secondary budget | Three bytes and a new selector namespace; preserves base GETX/SETX. A new primary escape could also be three bytes but would spend one primary unnecessarily at present |
 | User access under a new primary | One primary and explicit descriptors | Three/five bytes; keeps common transfers compact and avoids consuming 64 existing secondary tags. Moving the same full descriptor behind another escape adds a byte unless the layout is redesigned |
 | Compact branch/SP addressing | Sixteen primary positions for branches, one for SP; B1 reuses fields | Two-byte branches and three-byte short memory forms. Escaping a rel8 branch would make it three bytes, equal to current rel16 size; an extra SP escape byte would erase its size saving |
 | Far call/return under dedicated primaries | Two primaries | Five-byte packed-target call and one-byte return. Existing-escape tags would save both primaries but make these forms six/two bytes and trigger the longer-instruction audit for the call. A three-byte target alternative must be reviewed separately |
@@ -394,57 +457,40 @@ must not be counted as primary opcode consumption.
 
 ## Unassigned encoding proposals
 
-The remaining proposals below keep their new opcode/family tags symbolic.
-The immediate ALU assignments above supersede the former imm4 candidate.
-These proposals are not another machine-readable encoding payload and are not
-enabled by tools. Protected execution is prototyped
-before compact code generation; either milestone can be reviewed independently.
-
-| Form | Bytes | Proposed byte layout (symbolic tags) |
-|---|---:|---|
-| Short branch | 2 | `BR8_BASE + condition`, `rel8`; condition order matches all fifteen existing rel16 predicates; family base unassigned |
-| B1 simm6 | 3 | Existing `$15`, existing `1ds0zrrr`, `ddddddpp`; upper six descriptor bits are signed displacement, low two B1 base |
-| Long B1 | 5 | Existing `$15`, existing `1ds1zrrr`, `000000pp`, `disp_lo`, `disp_hi` |
-| Short SP memory | 3 | `SP8`, `0d11zrrr`, `off8`; new primary tag SP8 unassigned; d/z/rrr retain their existing meanings |
+The B1, rel8 and SP compact proposals have moved to the assigned layouts and
+embedded payload. The six byte/word immediate ALU families are assigned.
+No further compact opcode family is granted by this section. Post-increment and
+checked register-to-pointer arithmetic remain unassigned. The latter was
+[measured and deferred](ISA_EXAMPLES.md#checked-register-to-pointer-arithmetic-decision)
+as described in Appendix B of ISA.md.
+The unsigned B0-to-B1 study notation `ADDP.R` has no numeric encoding. Its two-byte
+cost model needs sixteen tags in an existing escape (zero new primaries/tables);
+a three-byte alternative needs one tag plus a descriptor with sixteen legal
+source/destination combinations and reserved-bit validation. Neither alternative
+selects or reserves a slot, adds DP, changes schema 5, or changes any assigned
+encoding. The primary budget remains 111 assigned / 145 unassigned and `$1A`
+remains 80 assigned / 176 unassigned tags.
 
 Extended context/control access has moved to the assigned tables above. The
-eight-bit third-byte index is a separate encoding, not an expansion of the legacy
+eight-bit third-byte index is a separate encoding, separate from the base
 five-bit field. All four access classes preserve flags, reject illegal selectors
 at decode, and keep their assigned numeric layouts separate from the proposals.
 
 Immediate-count shifts/rotates have moved to the assigned tables above. All
 forty numeric tags, count bounds, Invalid State classification, metadata and
-working-mode execution are implemented. Register counts and through-carry
+operand validation are specified. Register counts and through-carry
 rotates remain outside the assigned extension.
 
 ### Compact-form selection and exact semantics
 
-For branches, `.S` forces rel8 and `.W` forces rel16; unsuffixed forms start long.
-Compute displacement from the end of the **selected** instruction in a wide type.
-With no alignment-dependent directives, repeatedly shrink every eligible long
-branch, accounting for its own shrink and relocating forward/backward targets,
-until no sizes change. Validate forced-short ranges after convergence, so another
-branch's shrink can make a forced-short target fit. Forced-long forms never shrink.
-Reject out-of-range final displacement rather than truncate. The unused condition
-slot is illegal before any displacement fetch. Fetch never wraps; a taken branch
-may use intermediate next=$10000 only if all instruction bytes fit and the final
-target is representable/executable. Untaken next must itself be representable.
-Flags and all fifteen predicates are identical to rel16.
+Short branches have moved to the [assigned layouts](#assigned-short-branches)
+and metadata; their numeric block and relaxation rules are no longer proposals.
 
-For B1, choose a=0 for -32..31 inclusive, including zero; sign-extend descriptor
-bits 7–2 before adding the original base in a wide type. Use a=1 outside that
-range, retaining signed disp16 and its early zero-upper-descriptor check. Long
-zero displacement remains a valid noncanonical encoding. Until the compact format is assigned, every nonzero
-upper descriptor field remains illegal. Width, CS/DS selection, base/value alias
-sampling, protection checks and atomic stores do not change.
+B1 simm6 has moved to the [assigned layouts](#assigned-compact-b1-displacements)
+and embedded metadata; it is no longer an unassigned proposal.
 
-For SP, choose the new form only for unsigned 0..255; otherwise retain off16.
-A byte transfer still carries an unsigned slot offset. Negative offsets are
-rejected. Both forms check the same SB≤SP≤ST invariant, allocated slot interval,
-SS translation, rights, backing and final PC before any effect. Slot 255 must fit
-the entire byte/word. Offset 255 means +255, not -1; offset 256 selects the long
-form and cannot truncate to zero. Reserved
-second-byte fields of SP8 are illegal without fetching a third byte.
+Compact SP has moved to the [assigned layouts](#assigned-compact-sp-offsets);
+its 0..255 selection, fallback, canonicalization and precise faults are normative.
 
 For assigned immediates, use the byte/word rules above and the normative
 [conformance requirements](ISA.md#conformance-immediate-alu).
@@ -452,51 +498,35 @@ No signed-imm4 arithmetic family is assigned. The assembler must not remove a
 constant setup unless register liveness and visible flag effects are proven;
 no implicit constant/scratch register is consumed.
 
-Tests for the remaining candidates: all branch predicates and rel8 endpoints/
-cascades/segment ends; all B1 bases, signed endpoints and long fallback/early
-reserved-bit failure; SP offsets 0/255/256 plus allocation/protection atomicity;
-all GPRs, selector classes, privilege precedence and index limits for extended
-accesses. Unassigned forms must remain illegal until their layouts are assigned.
+Assigned branch/B1 conformance covers every predicate, signed endpoint,
+cascade, segment end, base/value alias and early long-form rejection. Compact SP
+conformance includes 0/255/256, whole-slot allocation/protection and atomicity.
+Unassigned forms remain illegal.
 
 ### Kernel context and control-access cost
 
-The retained [context-frame study](ISA_EXAMPLES.md#os-oriented-workloads) is a
-17-word return image, not an implemented protected scheduler: it uses 34 three-byte GETX/
-SETX transfers (**102 bytes**). Its total is 281 baseline bytes, or 221 with
-compact B1 memory accesses; those totals include memory, setup and entry/return.
-
-A hypothetical 20-word spill plus reload costs 40 context transfers, **120 bytes**
-at the assigned three-byte access size, before memory operations. This is a size
-calculation, not a new benchmark. Canonical U user-access selectors are zero and
-may be rematerialized instead of saved under the kernel ABI. The new full-index
-forms keep the cost per context transfer at three bytes without introducing
-bulk memory operations or variable-count atomic instructions. Measure the real
-two-process scheduler, its faults, and register liveness before reconsidering a
-multiword context transfer.
-
-CPU-only controls (process-map ID, user-access selectors, descriptor publication,
-entry configuration) use assigned GETC/SETC access. Timer/PIC remain protected
-MMIO, accessed with ordinary MOV; existing CSR moves remain their existing size.
-No one-byte fast-control opcode, general-purpose encoding sacrifice, port-I/O
-instruction or duplicate timer/PIC register path is justified by current evidence.
-Measure initialization, syscall and IRQ paths after the protected CPU prototype;
-the assigned context/control layouts now keep each transfer at three bytes.
+A twenty-word spill/reload uses forty GETX/SETX transfers, 120 instruction bytes
+before memory operations. This is a static size calculation, not a benchmark.
+Use the [current guest/kernel measurements](ISA_EXAMPLES.md#current-workload-measurements)
+for executed code and schedules. Canonical user-access selectors may be rematerialized
+under the documented ABI. CPU controls use GETC/SETC; timer/PIC use ordinary MOV
+to MMIO. No bulk context-transfer or alternate device-control opcode is assigned.
 
 ## Instruction-length audit
 
 Assigned instructions currently occupy 1–5 bytes; that is not a permanent
-architectural limit. No current assignment needs a longer form. The loader
-rejects out-of-capacity lengths today. Before assigning or enabling a longer
+architectural limit. No current assignment needs a longer form. Consumers reject unsupported
+lengths. Before assigning or enabling a longer
 form, update and validate every consumer below rather than only enlarging fetch.
 
 | Consumer | Current implementation | Required before a longer form is supported |
 |---|---|---|
-| Embedded JSON | `instruction_bytes` is 1–5 for all represented assignments | Declare actual new lengths and maintain the distinction between assignments and runtime availability |
-| [generate_decode.py](../tools/generate_decode.py) | Five-element per-byte mask/expected/selector-validation arrays; uint8_t length; table count derived from metadata | Derive or enlarge validation capacity and validate length representability; the six decode tables are independent of instruction-byte capacity |
+| Embedded JSON | `instruction_bytes` is 1–5 for all represented assignments | Declare actual new lengths and audit all consumers |
+| [generate_decode.py](../tools/generate_decode.py) | Five-element per-byte mask/expected/selector-validation arrays; uint8_t length; table count derived from metadata | Derive or enlarge validation capacity and validate length representability; the seven decode tables are independent of instruction-byte capacity |
 | [cpu.cpp](../src/cpu.cpp) fetch | `std::array<uint8_t,5>` indexed by metadata length | Expand or derive fetch capacity, enforce agreement with validated metadata, and retain early rejection and checked segment ends |
 | CPU operand extraction | Opcode-dependent bytes packed into uint32_t | Use layout-aware extraction or checked wider operands before exceeding four packed operand bytes; a larger fetch buffer alone is insufficient |
-| [isa.py](../tools/isa.py) | Metadata-sized Python buffers; fixed label sizing for branch/CALL/CALLF/JS/JL | Add syntax, formatting and accurate sizing/relaxation for each form; retain truncation and image-boundary checks |
-| [encoding.py](../tools/encoding.py) | Validates schema/runtime, overlap, five-byte capacity, field/operand extents and early-byte checks | Expand supported limits and validate every new field/check before generating or consuming tables |
+| [isa.py](../tools/isa.py) | Metadata-sized Python buffers; iterative branch relaxation and fixed CALL/CALLF/JS/JL sizing | Add syntax, formatting and accurate sizing/relaxation for each form; retain truncation and image-boundary checks |
+| [encoding.py](../tools/encoding.py) | Validates schema/ISA identity, overlap, five-byte capacity, field/operand extents and early-byte checks | Expand supported limits and validate every new field/check before generating or consuming tables |
 | Conformance | Existing lengths, truncations, segment ends and atomic faults are covered | Add exact new lengths, last-valid placement, each truncation position, early reserved-field priority and atomic fetch/next-PC failure |
 
 A longer assignment must pass this audit together with metadata/tool/runtime
@@ -506,9 +536,14 @@ continue to apply.
 
 ## Metadata format
 
-All numeric values in JSON are decimal integers. Byte positions are zero-based from the instruction's first byte. Multibyte operands are little-endian. `isa_revision` identifies the legacy architecture baseline; `schema_version` identifies the metadata format (now 3). A consumer must validate these identifiers and the explicit runtime-mode availability described above. The payload covers all assigned working encodings.
+All numeric values in JSON are decimal integers. Byte positions are zero-based
+from the instruction's first byte; multibyte operands are little-endian.
+`isa_revision="working"` identifies the sole ISA target and `schema_version=5`
+identifies the metadata format. Consumers must validate both identifiers.
+Every represented entry is available; there are no per-version availability fields.
 
-The overall `status` remains `candidate` for architecture review. `instruction_set_status` is `frozen_for_implementation`; `execution_specification_status` is `validated_by_reference_emulator`. These are review/implementation milestones, not guest execution modes or new encoding fields.
+Current implementation/profile and executed-coverage status belongs to
+[Appendix C](ISA.md#implementation-status-and-remaining-work).
 
 The payload includes SWI at `$26`, GETX xtrap at `$1F $34`, and read-only
 context word xtrap at index `$14`, plus the TRAP alias. SWI has an unsigned
@@ -530,13 +565,13 @@ Exactly one entry may match. No match is Illegal Instruction immediately, withou
 | `length` | Complete instruction length in bytes |
 | `fields` | Bit fields extracted from instruction bytes; includes source/destination register-bank identity |
 | `operands` | Byte-aligned immediate/address/displacement fields with width and signed interpretation |
-| `encoding_checks` | Reserved-bit mask/equality or `allowed_values` checks performed as soon as that byte is fetched; failure is Illegal Instruction |
+| `bit_operands` | Packed numeric fields with name, byte, lsb, width in bits and signed interpretation; absent means none |
+| `encoding_checks` | Reserved-bit mask/equality or `allowed_values` checks performed as soon as that byte is fetched; failure is Illegal Instruction. Checks apply unconditionally |
 | `state_constraints` | Constraints on decoded operand values; apply after full instruction fetch with the stated fault kind |
 | `destination` | A fixed register selected by the primary opcode, as with ADDP/ADJSP |
 | `address` | Memory base class, segment, and whether stack-allocation checks apply |
 | `transfer_bits` | Value width, independently of address/displacement width |
 | `operation_bits` | ALU/test/shift/rotate operation width (8 or 16), independent of immediate/count storage |
-| `minimum_runtime` | Earliest named runtime level accepting this encoding; absent means legacy 0.4 subject to existing SWI/xtrap 0.5 restrictions |
 | `flags_read`, `flags_written` | Flag inputs and updates; absent `flags_read` means none |
 | `special_effects` | Conditional CSR effects or context restoration not expressible as ordinary calculated flags |
 | `semantic` | Operation identifier for a consumer's execution or formatting implementation |
@@ -545,9 +580,18 @@ A field is extracted as `(bytes[field.byte] >> field.lsb) & ((1 << field.width) 
 
 Operands are assembled from `width_bytes` starting at `byte`, then interpreted according to `signed`. This describes bits, not all assembly literal rules: for example, a MOV immediate can be written using a negative two's-complement literal even though the loaded value zero-extends. ADDP/ADJSP accept strictly signed literals, SWI accepts only unsigned 0–255, and SP-relative operands are unsigned.
 
-For B1 memory forms, the base-selector byte is fetched and validated before any optional displacement. Its upper six bits must be zero. GETX/SETX similarly validate their register byte's upper five bits. These checks differ from JL's nonzero reserved operand byte, which is an Invalid State fault after complete fetch.
+For B1 memory forms, byte 2 is validated before optional disp16. Long forms
+require zero upper six bits; short forms use those bits as a signed six-bit
+displacement. MOVU independently requires its reserved upper base bits to be zero.
+Packed operands use mask/shift extraction and sign extension and must not overlap
+register fields. For example byte `$FA` gives pp=2 and displacement -2.
+GETX/SETX register bytes require zero upper five bits. JL's reserved high operand
+byte is instead an Invalid State check after full fetch.
 
-Instruction families with multiple lengths have separate entries. B1 direct and displaced transfers therefore have distinct three-byte/five-byte entries. Assemblers select the direct form for zero displacement; decoders still accept an explicitly encoded zero displacement in the longer form.
+Separate entries describe three-byte B1 simm6 and five-byte disp16 forms.
+Assemblers select simm6 for -32..31. Raw long forms remain legal for those values;
+disassembly selects canonical compact assembly. Entry IDs containing `direct`
+identify the packed short form, including nonzero displacement.
 
 The payload's `instruction_bytes.min` and `instruction_bytes.max` describe the
 forms represented by that payload; the current maximum of five is not a
@@ -568,29 +612,27 @@ Aliases expand to real instructions before encoding. INCP/DECP accept r4–r7 or
 SETX writes the complete saved xcsr word without the live CSR mask. The encoding is legal even when its stored value is temporarily invalid. A valid IRET restore requires `(xcsr & ~$002F) == 0`, including E=0; invalid values raise a nested fault when protected entry is valid, leaving the edited frame intact. This is semantic validation at return, not an illegal SETX encoding or a new table match condition.
 
 The payload represents all 42 readable context words and twenty editable words.
-Legacy GETX selects indices `$00–$14`; legacy SETX selects `$00–$10`.
+Base GETX selects indices `$00–$14`; base SETX selects `$00–$10`.
 Extended GETX selects `$20–$29` and `$30–$3A`; extended SETX selects `$20–$22`. xtrap is zero-extended
 from the SWI service byte and reset to zero on every non-SWI entry. SWI #0 is
 distinguished by cause 6. `$1F $54` remains illegal before reading a third byte.
 
 ## Validation and implementation use
 
-The tools validate all 256 values of each of six decode tables, reject overlap,
-invalid selectors and out-of-capacity lengths, and compare allocation counts with
-the manual ledger. Working counts are primary 95 and ext10/ext15/ext1a/ext1f/ext27
-224/240/80/93/64. Legacy availability stays 43 primary in 0.4 and 44 in 0.5,
-with ext1a 28 and ext1f 60/61. The production assembler round-trips all new
-families, the retained published bytes, and seven protected-kernel images.
+Consumers must check all 256 values of each decode table for overlap, validate
+selector/operand bounds and capacity, and reject reserved encodings. The
+[allocation ledger](ISA.md#opcode-allocation-ledger) defines expected counts;
+reserved fields reject as soon as their bytes are known.
 
-The emulator's immediate ALU, protected maps/controls, nested context, MOVU,
-PIC/timer and host replay tests run alongside the retained test/far-call/shift
-and legacy suites. See [README.md](../README.md#validation) for executed evidence
-and scope; the conformance document remains the broader acceptance checklist.
+The authoritative [implementation and evidence record](ISA.md#implementation-status-and-remaining-work)
+identifies runtime/profile support, exact executed suites and software-scenario
+limits. This document defines layouts and consumer requirements, not a competing
+runtime-status inventory.
 
 ## Reading the embedded table
 
-Read the JSON code block between the two marker lines; validate schema version 3
-and runtime availability before decoding. For example, from the repository root:
+Read the JSON code block between the two marker lines; validate schema version 5
+before decoding. For example, from the repository root:
 
 ```python
 import json
@@ -608,14 +650,12 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
 ## Machine-readable table
 
 <!-- ISA_ENCODING_JSON_BEGIN -->
+
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 5,
   "architecture": "virtualcpu",
-  "isa_revision": "0.5",
-  "status": "candidate",
-  "instruction_set_status": "frozen_for_implementation",
-  "execution_specification_status": "validated_by_reference_emulator",
+  "isa_revision": "working",
   "byte_order": "little",
   "instruction_bytes": {
     "min": 1,
@@ -1441,7 +1481,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "flags_written": [],
           "semantic": "call_far_absolute",
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "target",
@@ -1462,8 +1501,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "fields": [],
           "operands": [],
           "flags_written": [],
-          "semantic": "return_far",
-          "minimum_runtime": "working"
+          "semantic": "return_far"
         },
         {
           "id": "addi_8",
@@ -1497,8 +1535,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "V"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "addi_16",
@@ -1532,8 +1569,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "V"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "subi_8",
@@ -1567,8 +1603,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "V"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "subi_16",
@@ -1602,8 +1637,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "V"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "cmpi_8",
@@ -1637,8 +1671,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "V"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "cmpi_16",
@@ -1672,8 +1705,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "V"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "andi_8",
@@ -1705,8 +1737,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "andi_16",
@@ -1738,8 +1769,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "ori_8",
@@ -1771,8 +1801,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "ori_16",
@@ -1804,8 +1833,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "xori_8",
@@ -1837,8 +1865,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "xori_16",
@@ -1870,8 +1897,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "alu_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "movu_escape",
@@ -1879,8 +1905,381 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "value": 39,
             "mask": 255
           },
-          "dispatch": "ext27",
-          "minimum_runtime": "working"
+          "dispatch": "ext27"
+        },
+        {
+          "id": "beq_short",
+          "mnemonic": "BEQ",
+          "match": {
+            "value": 96,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "Z"
+          ],
+          "semantic": "branch_eq"
+        },
+        {
+          "id": "bne_short",
+          "mnemonic": "BNE",
+          "match": {
+            "value": 97,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "Z"
+          ],
+          "semantic": "branch_ne"
+        },
+        {
+          "id": "bcs_short",
+          "mnemonic": "BCS",
+          "match": {
+            "value": 98,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "C"
+          ],
+          "semantic": "branch_cs"
+        },
+        {
+          "id": "bcc_short",
+          "mnemonic": "BCC",
+          "match": {
+            "value": 99,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "C"
+          ],
+          "semantic": "branch_cc"
+        },
+        {
+          "id": "bmi_short",
+          "mnemonic": "BMI",
+          "match": {
+            "value": 100,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "N"
+          ],
+          "semantic": "branch_mi"
+        },
+        {
+          "id": "bpl_short",
+          "mnemonic": "BPL",
+          "match": {
+            "value": 101,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "N"
+          ],
+          "semantic": "branch_pl"
+        },
+        {
+          "id": "bvs_short",
+          "mnemonic": "BVS",
+          "match": {
+            "value": 102,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "V"
+          ],
+          "semantic": "branch_vs"
+        },
+        {
+          "id": "bvc_short",
+          "mnemonic": "BVC",
+          "match": {
+            "value": 103,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "V"
+          ],
+          "semantic": "branch_vc"
+        },
+        {
+          "id": "bhi_short",
+          "mnemonic": "BHI",
+          "match": {
+            "value": 104,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "C",
+            "Z"
+          ],
+          "semantic": "branch_hi"
+        },
+        {
+          "id": "bls_short",
+          "mnemonic": "BLS",
+          "match": {
+            "value": 105,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "C",
+            "Z"
+          ],
+          "semantic": "branch_ls"
+        },
+        {
+          "id": "bge_short",
+          "mnemonic": "BGE",
+          "match": {
+            "value": 106,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "N",
+            "V"
+          ],
+          "semantic": "branch_ge"
+        },
+        {
+          "id": "blt_short",
+          "mnemonic": "BLT",
+          "match": {
+            "value": 107,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "N",
+            "V"
+          ],
+          "semantic": "branch_lt"
+        },
+        {
+          "id": "bgt_short",
+          "mnemonic": "BGT",
+          "match": {
+            "value": 108,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "Z",
+            "N",
+            "V"
+          ],
+          "semantic": "branch_gt"
+        },
+        {
+          "id": "ble_short",
+          "mnemonic": "BLE",
+          "match": {
+            "value": 109,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [
+            "Z",
+            "N",
+            "V"
+          ],
+          "semantic": "branch_le"
+        },
+        {
+          "id": "bra_short",
+          "mnemonic": "BRA",
+          "match": {
+            "value": 110,
+            "mask": 255
+          },
+          "length": 2,
+          "fields": [],
+          "operands": [
+            {
+              "name": "displacement",
+              "byte": 1,
+              "width_bytes": 1,
+              "signed": true,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "flags_read": [],
+          "semantic": "branch_ra"
+        },
+        {
+          "id": "compact_sp_escape",
+          "match": {
+            "value": 40,
+            "mask": 255
+          },
+          "dispatch": "ext28"
         }
       ]
     },
@@ -2608,15 +3007,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "ds",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "load_memory_zero_extend",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "load_memory_zero_extend"
+          ]
         },
         {
           "id": "mov_b1_ds_disp16_load_8",
@@ -2700,15 +3100,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "cs",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "load_memory_zero_extend",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "load_memory_zero_extend"
+          ]
         },
         {
           "id": "mov_b1_cs_disp16_load_8",
@@ -2792,15 +3193,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "ds",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "store_memory",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "store_memory"
+          ]
         },
         {
           "id": "mov_b1_ds_disp16_store_8",
@@ -2884,15 +3286,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "cs",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "store_memory",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "store_memory"
+          ]
         },
         {
           "id": "mov_b1_cs_disp16_store_8",
@@ -3216,15 +3619,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "ds",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "load_memory_zero_extend",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "load_memory_zero_extend"
+          ]
         },
         {
           "id": "mov_b1_ds_disp16_load_16",
@@ -3308,15 +3712,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "cs",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "load_memory_zero_extend",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "load_memory_zero_extend"
+          ]
         },
         {
           "id": "mov_b1_cs_disp16_load_16",
@@ -3400,15 +3805,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "ds",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "store_memory",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "store_memory"
+          ]
         },
         {
           "id": "mov_b1_ds_disp16_store_16",
@@ -3492,15 +3898,16 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "segment": "cs",
             "stack_bounds": false
           },
-          "encoding_checks": [
+          "semantic": "store_memory",
+          "bit_operands": [
             {
+              "name": "displacement",
               "byte": 2,
-              "mask": 252,
-              "equals": 0,
-              "fault": "illegal_instruction"
+              "lsb": 2,
+              "width": 6,
+              "signed": true
             }
-          ],
-          "semantic": "store_memory"
+          ]
         },
         {
           "id": "mov_b1_cs_disp16_store_16",
@@ -3688,8 +4095,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "test_register",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "tsti_8",
@@ -3721,8 +4127,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "test_immediate",
-          "operation_bits": 8,
-          "minimum_runtime": "working"
+          "operation_bits": 8
         },
         {
           "id": "tsti_16",
@@ -3754,8 +4159,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             "Z"
           ],
           "semantic": "test_immediate",
-          "operation_bits": 16,
-          "minimum_runtime": "working"
+          "operation_bits": 16
         },
         {
           "id": "shli_8",
@@ -3792,7 +4196,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 8,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -3837,7 +4240,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 16,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -3882,7 +4284,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 8,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -3927,7 +4328,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 16,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -3972,7 +4372,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 8,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -4017,7 +4416,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 16,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -4062,7 +4460,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 8,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -4107,7 +4504,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 16,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -4152,7 +4548,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 8,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -4197,7 +4592,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           ],
           "semantic": "shift_rotate_immediate",
           "operation_bits": 16,
-          "minimum_runtime": "working",
           "state_constraints": [
             {
               "operand": "count",
@@ -4489,8 +4883,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             }
           ],
           "flags_written": [],
-          "semantic": "getx_extended",
-          "minimum_runtime": "working"
+          "semantic": "getx_extended"
         },
         {
           "id": "setx_extended",
@@ -4528,8 +4921,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             }
           ],
           "flags_written": [],
-          "semantic": "setx_extended",
-          "minimum_runtime": "working"
+          "semantic": "setx_extended"
         },
         {
           "id": "getc",
@@ -4603,8 +4995,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             }
           ],
           "flags_written": [],
-          "semantic": "getc",
-          "minimum_runtime": "working"
+          "semantic": "getc"
         },
         {
           "id": "setc",
@@ -4659,8 +5050,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
             }
           ],
           "flags_written": [],
-          "semantic": "setc",
-          "minimum_runtime": "working"
+          "semantic": "setc"
         }
       ]
     },
@@ -4705,8 +5095,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_direct_load_16",
@@ -4746,8 +5135,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_disp16_load_8",
@@ -4794,8 +5182,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_disp16_load_16",
@@ -4842,8 +5229,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_direct_store_8",
@@ -4883,8 +5269,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_direct_store_16",
@@ -4924,8 +5309,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_disp16_store_8",
@@ -4972,8 +5356,7 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
-          },
-          "minimum_runtime": "working"
+          }
         },
         {
           "id": "movu_disp16_store_16",
@@ -5020,8 +5403,152 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
           "address": {
             "base": "B1",
             "segment": "uaccess"
+          }
+        }
+      ]
+    },
+    "ext28": {
+      "inspect_byte": 1,
+      "entries": [
+        {
+          "id": "mov_sp8_load_8",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 56,
+            "mask": 248
           },
-          "minimum_runtime": "working"
+          "length": 3,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 3,
+              "bank": "general"
+            }
+          ],
+          "operands": [
+            {
+              "name": "offset",
+              "byte": 2,
+              "width_bytes": 1,
+              "signed": false,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "transfer_bits": 8,
+          "address": {
+            "base": "sp",
+            "segment": "ss",
+            "stack_bounds": true
+          },
+          "semantic": "load_memory_zero_extend"
+        },
+        {
+          "id": "mov_sp8_store_8",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 120,
+            "mask": 248
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 0,
+              "width": 3,
+              "bank": "general"
+            }
+          ],
+          "operands": [
+            {
+              "name": "offset",
+              "byte": 2,
+              "width_bytes": 1,
+              "signed": false,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "transfer_bits": 8,
+          "address": {
+            "base": "sp",
+            "segment": "ss",
+            "stack_bounds": true
+          },
+          "semantic": "store_memory"
+        },
+        {
+          "id": "mov_sp8_load_16",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 48,
+            "mask": 248
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "destination",
+              "byte": 1,
+              "lsb": 0,
+              "width": 3,
+              "bank": "general"
+            }
+          ],
+          "operands": [
+            {
+              "name": "offset",
+              "byte": 2,
+              "width_bytes": 1,
+              "signed": false,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "transfer_bits": 16,
+          "address": {
+            "base": "sp",
+            "segment": "ss",
+            "stack_bounds": true
+          },
+          "semantic": "load_memory_zero_extend"
+        },
+        {
+          "id": "mov_sp8_store_16",
+          "mnemonic": "MOV",
+          "match": {
+            "value": 112,
+            "mask": 248
+          },
+          "length": 3,
+          "fields": [
+            {
+              "name": "source",
+              "byte": 1,
+              "lsb": 0,
+              "width": 3,
+              "bank": "general"
+            }
+          ],
+          "operands": [
+            {
+              "name": "offset",
+              "byte": 2,
+              "width_bytes": 1,
+              "signed": false,
+              "byte_order": "little"
+            }
+          ],
+          "flags_written": [],
+          "transfer_bits": 16,
+          "address": {
+            "base": "sp",
+            "segment": "ss",
+            "stack_bounds": true
+          },
+          "semantic": "store_memory"
         }
       ]
     }
@@ -5118,11 +5645,6 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
   },
   "semantic_reference": "ISA.md",
   "format_reference": "ISA_ENCODING.md",
-  "runtime_modes": {
-    "0.4": 4,
-    "0.5": 5,
-    "working": 6
-  },
   "control_indices": {
     "process_map": 0,
     "uaccess_map": 1,
@@ -5233,4 +5755,23 @@ Compare `metadata["isa_revision"]` and `metadata["schema_version"]` with the ver
   }
 }
 ```
+
 <!-- ISA_ENCODING_JSON_END -->
+
+### Console profile and instructions
+
+The [console-v1 device/replay contract](ISA.md#console-machine-profile-and-recorded-input)
+uses existing aligned word MOV, MOVU, context and control encodings. Its console
+registers are machine-profile assignments; replay version 2 is a host-event format,
+not a new ISA revision or metadata schema. All seven decode tables and their assigned
+bytes remain unchanged. Default minimal-v1 MMIO rejection and version-1 replay
+headers retain their existing semantics. The [blocking terminal](ISA_EXAMPLES.md#executable-blocking-console-terminal)
+provides a software integration workload for later size measurements.
+
+### Compiler workload measurements
+
+[SmallC and the executed corpus](ISA_EXAMPLES.md#smallc-compiler-and-executable-workloads)
+produce assigned assembly through `tools/isa.py`. Per-instruction classifications
+come from the current encoding metadata after assembly; no compiler opcode table
+or private encodings are introduced. The current workload report records B1/SP displacements, rel8/rel16 distances,
+retirements, stack use and residual compact opportunities.

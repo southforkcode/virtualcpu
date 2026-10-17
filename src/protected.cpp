@@ -15,7 +15,7 @@ void VirtualCPU::increment(std::string& value) {
     value.insert(value.begin(),'1');
 }
 unsigned VirtualCPU::backing(uint32_t a) const {
-    if (revision_==Revision::Working && a>=0xff0000 && a<0x1000000) return a<0xff0100?2:0;
+    if (a>=0xff0000 && a<0x1000000) return a<0xff0100?2:0;
     return a<ram_.size() && installed_[a]?1:0;
 }
 std::array<uint16_t,7> VirtualCPU::descriptor(uint16_t map,uint16_t segment) const {
@@ -24,7 +24,6 @@ std::array<uint16_t,7> VirtualCPU::descriptor(uint16_t map,uint16_t segment) con
 }
 std::optional<uint32_t> VirtualCPU::physical_hint(uint16_t segment,int64_t offset) const {
     if (offset<0 || offset>65535) return {};
-    if (!protected_) return (uint32_t(segment)<<16)|uint32_t(offset);
     auto d=descriptor(mode()==Mode::Kernel?0:protected_->controls[0],segment);
     if (!(d[1]&P)) return {};
     return (uint32_t(d[0])<<16)|uint32_t(offset);
@@ -150,7 +149,7 @@ uint16_t VirtualCPU::read_context(unsigned index) const {
     }
 }
 void VirtualCPU::write_context(unsigned index,uint16_t value) {
-    if (index<21) { (*context_)[index]=value; if (protected_) protected_->frames.back().words[index]=value; }
+    if (index<21) { (*context_)[index]=value; protected_->frames.back().words[index]=value; }
     else protected_->frames.back().controls.at(index-0x20)=value;
 }
 uint16_t VirtualCPU::read_control(uint8_t id) const {
@@ -240,6 +239,11 @@ void VirtualCPU::evaluate_timer(ProtectedState& p) {
 uint16_t VirtualCPU::mmio_read(uint32_t address) const {
     const auto& p=*protected_; unsigned o=address-0xff0000;
     auto invalid=[&]() -> uint16_t { throw Fault{Cause::Memory,address}; };
+    if (profile_==MachineProfile::ConsoleV1) {
+        if (o==0x80) return p.console_rx.empty()?0:p.console_rx.front();
+        if (o==0x84) return (!p.console_rx.empty()?1:0)|(p.console_tx.size()<65536?2:0);
+        if (o==0x86) return uint16_t(p.console_rx.size());
+    }
     switch (o) {
     case 0:return p.pending; case 2:return p.enable; case 4:return p.in_service; case 8:return p.levels; case 10:return 7;
     case 0x22:return (p.snapshot_valid?1:0)|(p.time==maximum?2:0)|(p.deadline_overflow?4:0);
@@ -253,10 +257,21 @@ uint16_t VirtualCPU::mmio_read(uint32_t address) const {
     if (o>=0x50 && o<=0x56) return uint16_t(p.period>>(8*(o-0x50)));
     return invalid();
 }
+void VirtualCPU::commit_mmio_read(uint32_t address) {
+    auto& p=*protected_;
+    if (profile_==MachineProfile::ConsoleV1 && address==0xff0080 && !p.console_rx.empty()) {
+        p.console_rx.erase(p.console_rx.begin());
+        if (p.console_rx.empty()) p.levels&=uint16_t(~4u);
+    }
+}
 std::function<void()> VirtualCPU::stage_mmio(uint32_t address,uint16_t value) {
     const auto& p=*protected_; unsigned o=address-0xff0000;
     auto invalid=[&] { throw Fault{Cause::Memory,address}; };
     if (o&1) invalid();
+    if (profile_==MachineProfile::ConsoleV1 && o==0x82) {
+        if (value>255 || p.console_tx.size()>=65536) invalid();
+        return [this,value]{protected_->console_tx.push_back(uint8_t(value));};
+    }
     if (o==2 || o==6) return [this,o,value] { if (o==2) protected_->enable=value; else protected_->in_service&=uint16_t(~value); };
     if (o==0x24) { if (value!=0 && value!=1 && value!=3) invalid(); return [this,value]{protected_->shadow_mode=value;}; }
     if (o>=0x30 && o<=0x3e) return [this,o,value] {

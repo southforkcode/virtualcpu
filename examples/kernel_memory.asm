@@ -15,7 +15,7 @@ GETX xcs,r0
 CMPI.W #$0000,r0
 BNE $1400
 GETX xpc,r0
-CMPI.W #$150F,r0
+CMPI.W #$1539,r0
 BNE $1400
 GETX xreason,r0
 CMPI.W #1,r0
@@ -25,10 +25,13 @@ BHI $1400
 MOV.W [$3008],r0
 ADDI.W #1,r0
 MOV.W r0,[$3008]
+MOV.W #$6080,r4
+CALL $704D
+TST.W r0
+BNE $1400
 MOV.W #0,r0
-SETC r0,uaccess_map
 SETX r0,xuaccess_map
 SETX r0,xuaccess_segment
-MOV.W #$1521,r0
+MOV.W #$1551,r0
 SETX r0,xpc
 IRET

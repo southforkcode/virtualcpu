@@ -14,13 +14,21 @@ architecture distinguishes arithmetic accumulators (B0) from address/storage
 registers (B1). Instructions execute atomically and faults are precise.
 
 This working copy describes one instruction set and one protected execution
-architecture. Assigned encodings are specified in Chapter 9. Device layouts
-that still require definition are listed in
-Appendix C. Unassigned fields and encodings must not be inferred from prose or
+architecture. Assigned encodings are specified in Chapter 9. Unassigned fields and encodings must not be inferred from prose or
 from the order of a table.
 
-This is a design specification, not a statement that every facility is already
-implemented. Implementation coverage is tracked separately in the repository.
+This manual defines architectural behavior. The authoritative current runtime,
+machine-profile and software-scenario status is recorded in
+[Appendix C](#implementation-status-and-remaining-work); conformance requirements
+are separate from evidence actually executed.
+
+### ISA target
+
+`working` is the sole ISA target. Every assigned encoding in Chapter 9 is
+available; U/K privilege, state, operand and target checks determine whether an
+instruction executes successfully. Complete legal fetch/decode precedes privilege
+checks. Reset starts the protected machine in K with the `minimal-v1` profile;
+`console-v1` adds the byte-input console contract in Chapter 7.
 
 ### Requirements and document boundaries
 
@@ -33,7 +41,7 @@ silently ignore an illegal encoding or truncate an invalid architectural value.
 Chapters 2–9 define processor behavior and assigned encodings. Appendix A contains
 software ABI contracts, which bind software using those conventions but are not
 additional CPU interlocks. Appendix B records unassigned extension proposals;
-it grants no executable opcode. Appendix C identifies conformance requirements
+it grants no executable opcode. Appendix C identifies conformance requirements,
 implementation status, and remaining specification work.
 
 [ISA_ENCODING.md](ISA_ENCODING.md) is the companion encoding reference; its
@@ -58,8 +66,8 @@ studies. Examples and measurements do not override architectural requirements.
 - [9. Binary encoding reference](#9-binary-encoding-reference)
 - [Appendix A. Software ABI conventions](#appendix-a-software-abi-conventions)
 - [Appendix B. Unassigned extension proposals](#appendix-b-unassigned-extension-proposals)
-- [Appendix C. Conformance and draft completion](#appendix-c-conformance-and-draft-completion)
-  - [Review completion](#review-feedback-and-completion), [executed evidence](#executed-implementation-evidence), [requirements](#architectural-conformance-requirements), [exact vectors](#instruction-and-execution-vectors)
+- [Appendix C. Conformance and implementation](#appendix-c-conformance-and-implementation)
+  - [executed evidence](#executed-implementation-evidence), [requirements](#architectural-conformance-requirements), [exact vectors](#instruction-and-execution-vectors)
 
 ### Conventions
 
@@ -347,12 +355,17 @@ virtual address formation before translation:
 | `[dp+disp16]` | DS | `DP + s16(disp16)` |
 | `[ds:rp+disp16]` | DS | `rp + s16(disp16)`; rp is r4–r7 |
 | `[cs:rp+disp16]` | CS | `rp + s16(disp16)`; rp is r4–r7 |
-| `[sp+off16]` | SS | `SP + unsigned(off16)` |
+| `[sp+off8/off16]` | SS | `SP + zero_extend(off8)` or `SP + unsigned(off16)` |
 | PUSH/POP/CALL/RET/CALLF/RETF stack access | SS | As defined in Stack |
 
 Calculate offsets in a wider signed or unsigned type as appropriate. Negative or greater-than-65535 offsets fault; they never wrap or carry into another segment. Every byte must fit within the same segment and be installed. Words may start at odd offsets but not at `$FFFF`. Validate the whole access before writing any byte.
 
-DP and B1 memory displacements range from -32768 to 32767. SP offsets range from 0 to 65535 and additionally obey stack limits. Assemblers reject negative SP offsets and out-of-range displacements instead of truncating them. An encoded SP offset `$FFFF` means +65535, never -1. B1 forms select only CS or DS; they do not provide an SS-relative stack-slot mode.
+DP and B1 memory displacements range from -32768 to 32767. Working B1 MOV
+uses a three-byte signed-six-bit form for -32..31 and a five-byte signed-16-bit
+form otherwise; both use the same widened address calculation.  MOVU
+retains its independent zero/disp16 layouts. SP offsets range from 0 to 65535 and additionally obey stack limits. Working
+assembly chooses three-byte `$28` off8 for 0..255 and four-byte `$15` off16
+otherwise.  Assemblers reject negative SP offsets and out-of-range displacements instead of truncating them. An encoded SP offset `$FFFF` means +65535, never -1. B1 forms select only CS or DS; they do not provide an SS-relative stack-slot mode.
 
 A byte at offset `$FFFF` is accessible, but an offset `$10000` cannot be stored as a pointer or end sentinel. A traversal that includes the last byte must test its count/end condition before advancing past that byte. ADDP from `$FFFF` by +1 still faults; it never enters the next segment. See the count-controlled segment-end traversal in the worked examples.
 
@@ -367,7 +380,8 @@ allocated stack bytes = [SP, ST)
 
 ST is a 16-bit exclusive bound: `$10000` cannot be represented, so offset `$FFFF` is never a stack byte. Reset uses `ST=SP=$FFFE`, `SB=0`. Odd bounds and pointers are allowed; words do not require alignment.
 
-Direct stack-relative MOV computes `start = SP + unsigned(off16)` and requires a valid stack configuration, `SP <= start`, and `start + size <= ST`, with arithmetic checked before truncation. It uses SS and does not change SP. Stack slots below SP are inaccessible through this mode. Even `[sp+0]` faults on an empty stack. A register-to-SP move changes the allocation boundary; it neither clears nor writes allocated memory.
+Direct stack-relative MOV computes `start = SP + unsigned(offset)` for both
+off8 and off16 and requires a valid stack configuration, `SP <= start`, and `start + size <= ST`, with arithmetic checked before truncation. It uses SS and does not change SP. Stack slots below SP are inaccessible through this mode. Even `[sp+0]` faults on an empty stack. A register-to-SP move changes the allocation boundary; it neither clears nor writes allocated memory.
 
 Absolute/DP-relative and B1 pointer accesses use ordinary memory rules even if their selected segment equals SS. Stack limits are bounds for stack operations, not general memory protection.
 
@@ -392,15 +406,15 @@ map 0 with K execute/stack rights in K, or process_map with U execute/stack
 rights in U. They preserve execution mode, process_map, user-access controls,
 exception-frame depth, all flags, DS/SS/SB/ST/DP and r0–r7. They cannot enter K
 from U or select a different process map. Fetch, stack and target must be RAM;
-no part of a far frame may touch MMIO. The working-mode implementation enforces RAM backing and protected rights/kind checks.
+no part of a far frame may touch MMIO. Apply the ordinary RAM backing and
+protected rights/kind checks to both frame words.
 
 CALLF is five bytes, `$54 pc_lo pc_hi cs 00`, using JL's little-endian
 packed-address convention. Source `CALLF abs32` accepts one unsigned packed
 24-bit address (0..$FFFFFF), without `#` or a size suffix. The high encoded byte
 must be zero; a nonzero value is Invalid State after complete instruction fetch,
 not an early reserved-encoding rejection. RETF is one byte `$55`, with no operand
-or suffix. No indirect far-call form is assigned. Legacy modes 0.4/0.5 reject
-both primary bytes immediately, without operand fetch; working mode enables them.
+or suffix. No indirect far-call form is assigned.
 
 Let P be CALLF's old SP, and `next = old_PC+5` calculated without narrowing.
 The four-byte frame occupies `[P-4,P)` in the original SS:
@@ -590,8 +604,8 @@ Every such fault records the following **logical words**, read-only through
 context access. [Extended context indices and numeric enums](#extended-saved-context)
 are assigned in Chapter 5; the word widths, meanings, validity rules and
 reset-on-entry behavior below are the execution contract. On nonmemory entries,
-scalar/validity words clear and semantic tags are NONE (zero); legacy
-xaddr reporting for Illegal/Invalid State remains unchanged.
+scalar/validity words clear and semantic tags are NONE (zero); physical
+xaddr reporting for Illegal/Invalid State is defined separately.
 
 | Word(s) | Logical representation |
 |---|---|
@@ -700,7 +714,7 @@ Let `next = original_PC + instruction_length`, computed without truncation:
 
 - Ordinary instructions and HALT require `next <= $FFFF` and commit PC=next.
 - Untaken conditional branches likewise require a representable next.
-- Taken branches use `target = next + s16(rel16)` and require `0 <= target <= $FFFF`. Their intermediate next may equal `$10000` if the resulting target is valid.
+- Taken branches use `target = next + sign_extend(displacement)` and require `0 <= target <= $FFFF`. Their intermediate next may equal `$10000` if the resulting target is valid.
 - JS, JL, RET, RETF, and IRET use their explicit target; unused next need not be representable. CALL and CALLF require a representable next because they save that return offset.
 - SWI requires a representable next because it saves that resume offset in xpc. It transfers through vector 6 without checking whether the following instruction is installed; IRET checks the selected resume target later.
 - A move to CS uses next in the new segment, so next must be representable.
@@ -799,7 +813,7 @@ retains its allocated kernel stack. The precise entry sequence is in Chapter 6.
 
 The following assigned context indices provide the established register and
 metadata interface. Additional state and fault metadata have separately assigned
-[extended indices](#extended-saved-context) without changing these legacy forms.
+[extended indices](#extended-saved-context) without changing these base forms.
 
 | Index (hex) | Context name | Saved value | Writable with SETX |
 |---|---|---|---|
@@ -818,7 +832,7 @@ metadata interface. Additional state and fault metadata have separately assigned
 | 13 | `xaddrhi` | Address bits 23–16 in bits 7–0; bit 8 means valid; others zero | No |
 | 14 | `xtrap` | SWI service number in bits 7–0; zero on non-SWI entry; upper bits zero | No |
 
-This legacy context interface contains 21 words; its first 17 are writable.
+This base context interface contains 21 words; its first 17 are writable.
 Protected state and additional metadata extend the interface without renumbering
 these fields. Every non-SWI entry sets xtrap=0, including a fault while fetching or validating SWI. Cause 6 distinguishes SWI #0 from those other entries. IRET does not restore read-only metadata as live registers. The saved service number avoids consuming an argument register or rereading mutable instruction memory.
 
@@ -833,7 +847,7 @@ The relevant address is the first unavailable instruction/data byte, a represent
 The assigned extended GETX/SETX forms use a full eight-bit third-byte selector
 and a GPR selector in the second byte; see
 [extended context encoding](#extended-context-encoding). They address only the
-top ordinary frame, just like legacy GETX/SETX. No instruction selects a lower
+top ordinary frame, just like base GETX/SETX. No instruction selects a lower
 frame, physical frame address, or terminal diagnostic record.
 
 | Index (hex) | Context name | Saved value | Writable with extended SETX |
@@ -861,11 +875,11 @@ frame, physical frame address, or terminal diagnostic record.
 | 3A | `xreason` | Memory failure reason enum | No |
 
 These are 21 additional words: three writable image fields and eighteen
-read-only words. Combined with the legacy interface, the frame exposes 42 words,
+read-only words. Combined with the base interface, the frame exposes 42 words,
 of which twenty are writable. Extended selectors `$00–$1F`, `$2A–$2F`, and
-`$3B–$FF` are unassigned and illegal in the extended encoding, including legacy
-indices `$00–$14`; legacy instructions remain the sole encoding of those words.
-An extended access does not alias or widen the legacy five-bit field.
+`$3B–$FF` are unassigned and illegal in the extended encoding, including base
+indices `$00–$14`; base instructions remain the sole encoding of those words.
+An extended access does not alias or widen the base five-bit field.
 
 On capture, the new writable fields contain the exact interrupted control
 values, including a map ID invalidated since it was selected. Extended SETX
@@ -890,8 +904,8 @@ when xcause=5; otherwise xirq_source is zero without identifying an IRQ. Likewis
 xcause=6 distinguishes SWI service zero, and xcause=7 distinguishes Privilege.
 All selector/mode/depth/source/enum values are zero-extended canonical words;
 only xoffsethi deliberately retains sign bits of a signed widened offset.
-The virtual and legacy physical address high words keep their explicit bit-8
-valid flags. Invalid addresses have both associated words zero. Legacy xaddr
+The virtual and physical address high words keep their explicit bit-8
+valid flags. Invalid addresses have both associated words zero. Physical xaddr
 continues to mean a physical address, never a virtual selector:offset.
 Reset discards all ordinary frames and their metadata; an inactive GETX/SETX
 raises Invalid State in K rather than exposing a zero or stale saved image.
@@ -910,12 +924,12 @@ generated. Numeric order does not change the already specified fault priority.
 
 Nonmemory events clear all eleven words `$30–$3A` to zero. This includes
 Privilege, Illegal Instruction, Invalid State, Stack Boundary, successful SWI,
-and IRQ entry; legacy xaddr may still report an instruction/stack address as
+and IRQ entry; physical xaddr may still report an instruction/stack address as
 already specified. Memory Access entries populate these words from the failed
 access, including KERNEL/OPERAND selector-only ENTRY_COMMIT probes and
 USER/RETURN_STATE selection probes during IRET or PREPARE_USER_RETURN. A
 failure fetching the IRET/prepare instruction is instead a KERNEL/FETCH event.
-Legacy xaddr reporting for nonmemory faults remains unchanged.
+Physical xaddr reporting for nonmemory faults remains unchanged.
 
 For example, a negative attempted offset -1 is xoffsetlo=`$FFFF`,
 xoffsethi=`$FFFF`, with both virtual/physical address pairs invalid and zero;
@@ -933,7 +947,7 @@ Privilege has **cause/vector 7**. Its four-byte packed kernel handler address
 occupies map 0, selector 0, offsets `$001C–$001F`; causes/vectors 0–6 retain their
 assignments. No new emergency/Double Fault vector is introduced. A legal
 privileged operation attempted in U saves its instruction-start PC/CS, canonical
-U xcsr with I=1, the physical instruction-start address in legacy xaddr, and
+U xcsr with I=1, the physical instruction-start address in physical xaddr, and
 the following xpriv_class. Ordinary effects do not commit; normal protected
 entry handles the event. xtrap, xirq_source, and memory words `$30–$3A` are zero.
 
@@ -944,8 +958,8 @@ entry handles the event. xtrap, xirq_source, and memory words `$30–$3A` are ze
 | `$0002` | INTERRUPT_CONTROL | DI/EI, including CLI/SEI aliases |
 | `$0003` | HALT | HALT |
 | `$0004` | STACK_LIMIT_WRITE | Direct MOV to SB or ST |
-| `$0005` | CONTEXT_READ | Legacy or extended GETX |
-| `$0006` | CONTEXT_WRITE | Legacy or extended SETX |
+| `$0005` | CONTEXT_READ | Base or extended GETX |
+| `$0006` | CONTEXT_WRITE | Base or extended SETX |
 | `$0007` | EXCEPTION_RETURN | IRET |
 | `$0008` | CONTROL_READ | GETC with a readable control selector |
 | `$0009` | CONTROL_WRITE | SETC with a writable control selector, including command writes |
@@ -991,9 +1005,9 @@ architectural parameters are:
 | IRQ sources | 16; source 0 reserved for timer |
 | Virtual time | Saturating 64-bit instruction clock, with explicit recorded idle advancement |
 | User interrupt enable | Always I=1; user code cannot modify it |
-| Protected access encodings | GETC/SETC and extended GETX/SETX assigned under `$1F`; implemented in working mode |
+| Protected access encodings | GETC/SETC and extended GETX/SETX assigned under `$1F`; working-mode encodings |
 | Privilege event | Cause/vector 7; operation-class enum assigned in Chapter 5 |
-| User-access encodings | MOVU under `$27`, three/five-byte forms; implemented in working mode |
+| User-access encodings | MOVU under `$27`, three/five-byte forms; working-mode encodings |
 | Machine interfaces | PIC/timer `minimal-v1` MMIO assigned in Chapter 7; other peripheral layouts pending |
 
 Assigned context indices `$00–$14`, CSR bit assignments, SWI `$26 imm8` and
@@ -1112,7 +1126,7 @@ than inheriting an interrupted process's authority.
 GETC and SETC are assigned three-byte K-only word transfers between CPU controls
 and any r0–r7. They preserve all flags and do not access guest memory or MMIO.
 Control commands may perform pure validation probes but never read device data.
-Their [binary encoding](#protected-control-encoding) is distinct from legacy
+Their [binary encoding](#protected-control-encoding) is distinct from base
 and extended GETX/SETX. Saved-context selectors are assigned separately in
 [Chapter 5](#extended-saved-context).
 
@@ -1318,7 +1332,7 @@ several instructions, implicit TLB, hardware generation, or automatic scheduler.
 
 #### Protected control setup examples
 
-These examples assemble in working mode. Use valid pinned K code, vectors,
+These examples assemble . Use valid pinned K code, vectors,
 and recovery state. To
 construct a full-range U R/W data descriptor for map 7, selector 3, frame `$23`:
 
@@ -1403,8 +1417,11 @@ target rejects preparation before the marker changes.
 
 This chapter assigns the deterministic PIC/timer interface and the minimum
 machine profile `minimal-v1`. These are machine/device contracts accessed through
-ordinary MOV, not new CPU-control selectors or primary opcodes. Console, storage,
-and other peripheral register layouts remain separate work.
+ordinary MOV, not new CPU-control selectors or primary opcodes. The explicitly
+selected [console-v1 profile](#console-machine-profile-and-recorded-input) extends
+this contract with recorded byte input and a console. The following PIC/timer
+and replay rules describe minimal-v1 unless an explicit console-v1 override applies.
+Storage and other peripheral layouts require their own contracts.
 
 ### Interrupts and deterministic time
 
@@ -1610,8 +1627,7 @@ ordinary MMIO instructions each retire once. A failed SWI entry does not retire.
 
 ### Deterministic host events and replay
 
-The source/event interface below is a required machine contract, not an extension
-of the legacy source-less host IRQ API. Working mode implements it explicitly.
+The source/event interface below is the required host-input contract.
 All calls run on the CPU thread between steps; asynchronous producers queue input
 to that thread. No source may mutate PIC/timer/backing during an instruction.
 
@@ -1710,7 +1726,8 @@ timer never inherit assertions from the previous run.
 
 ### Timer setup and acknowledgment example
 
-This is assigned-specification source, not current executable device support.
+This illustrative setup uses the minimal-v1 device contract. Its assembly and
+execution evidence is listed in [Appendix C](#implementation-status-and-remaining-work).
 Assume valid pinned K code, I=0, usable protected vectors/entry, time <=127,
 no pending/in-service sources, deasserted host lines, and no external input
 during setup. The timer is initially disabled.
@@ -1788,6 +1805,45 @@ program order, with no DMA initially. Storage uses explicit RAM buffers copied
 by kernel code; asynchronous completion is an interrupt/status event. Record host
 inputs and storage/console responses for replay. No host errno becomes an
 unstructured CPU fault after a device has already consumed input.
+
+### Console machine profile and recorded input
+
+`console-v1` is an explicitly selected Working-mode machine profile. The default
+remains `minimal-v1`; its backing tags, reserved-register faults and version-1
+replay headers are unchanged. Both profiles retain the same physical backing map.
+Console profile replay headers use version 2 and profile `console-v1`, with the
+same exact RAM/backing SHA-256 artifact binding and per-run boundary-zero rules.
+No instruction encoding or protected control selector changes.
+
+Console registers are at physical `$FF0080` RX (read), `$FF0082` TX (write),
+`$FF0084` STATUS (read), and `$FF0086` COUNT (read). Only aligned word MOV
+transactions are accepted; values carry zero-extended bytes. RX returns zero on
+empty and otherwise removes exactly one byte at successful instruction commit.
+A failed instruction, including a bad result PC, consumes nothing. TX rejects a
+nonzero upper byte and captures each committed byte. STATUS bit 0 means RX ready;
+bit 1 means TX ready. COUNT is the receive count, 0–64. Output capture is bounded
+at 65,536 bytes; when full TX ready clears and a TX write faults without effect.
+All other console offsets/directions/widths fault. There is no device clear command:
+reset clears both queues, capture, and interrupt state. The RX queue never silently
+overwrites data. Source 2 is device-owned and level asserted iff RX is nonempty;
+draining it deasserts the level. PIC pending remains sticky until normal delivery;
+ACK clears in-service and a still-asserted level can pend again. Source 0 timer
+wins simultaneous arbitration. Source 1 remains an external edge source. Minimal-v1 continues to permit external level-2
+events; console-v1 rejects them with BadSource.
+
+Replay format 2 adds records with exactly `run`, `boundary`, `sequence`, `kind`:
+`"console_rx"`, and `data`: a nonempty lowercase hex string of 1–64 bytes (two
+characters per byte). Typed events carry the same byte vector. Validation order
+per record is format, run/boundary, sequence, source/profile, execution state,
+queue capacity, then application to a staged copy. Unsupported typed console
+input is BadProfile; minimal-v1 JSON retains BadFormat for this unknown kind; excess remaining FIFO capacity is BadState. Malformed/empty/oversized
+payloads are BadFormat. A rejected batch changes neither device state nor sequence;
+earlier records are staged in order, so subsequent idle/IRQ validation sees them.
+Input is accepted while Running or Halted, never terminal. Input and ACK are
+ordered by boundary application before the next instruction; timer evaluation
+keeps its existing retirement/idle rules. A reset must be the sole record, drops
+all buffered input/output and begins a new run; drivers must discard old-run
+scheduled records. No wall-clock or host keyboard polling changes machine state.
 
 ## 8. Instruction reference
 
@@ -1950,19 +2006,22 @@ they introduce no privilege class.
 **Encoding:** TST.B is `$1A ($40+rd)`; TSTI.B is `$1A ($44+rd) imm8`;
 TSTI.W is `$1A ($48+rd) imm_lo imm_hi`. TST.W emits the existing
 `$10 ($20+5*rd)` OR-self encoding, disassembled as OR. See
-[the review and measured sequences](ISA_EXAMPLES.md#test-instruction-review-and-measurements). The twelve new tags execute
+[the review and measured sequences](ISA_EXAMPLES.md#current-workload-measurements). The twelve new tags execute
 in protected U/K when explicit `working` mode is selected.
 
 ### Bcc, BRA — Conditional or unconditional relative branch
 
-**Operands:** Signed rel16 from the end of the selected instruction; no assigned rel8 form.
+**Operands:** Signed rel8 (-128..127, working only) or rel16 (-32768..32767),
+measured from the end of the selected instruction. Branch width affects reach
+and length, not predicate interpretation.
 
 ```asm
-BEQ label    ; condition mnemonic from the branch table
-BRA label
+BEQ label    ; working: relax to short when reachable
+BRA.S label  ; force rel8, working only
+BNE.W label  ; force rel16; legal
 ```
 
-**Operation:** Evaluate the selected predicate without changing flags. If taken, set PC to `next + s16(rel16)` in the current CS; otherwise continue at next. Intermediate next may equal $10000 only for a taken branch with a valid target. All fifteen predicates are listed under [Branches and absolute jumps](#branches-and-absolute-jumps).
+**Operation:** Evaluate the selected predicate without changing flags. If taken, set PC to `next + sign_extend(displacement)` in the current CS; otherwise continue at next. Intermediate next may equal $10000 only for a taken branch with a valid target. All fifteen predicates are listed under [Branches and absolute jumps](#branches-and-absolute-jumps).
 
 Predicates follow the [conditional branch flag interpretation rules](#conditional-branch-flag-interpretation)
 regardless of whether the current flags came from a byte or word operation.
@@ -1971,7 +2030,10 @@ regardless of whether the current flags came from a byte or word operation.
 
 **Exceptions:** Selected next/target outside its segment or an unavailable target raises Memory Access; target probes require X rights. All entries also obey the common fetch, decode and commit rules.
 
-**Encoding:** Three bytes: `$40–$4E`, rel16 low byte, rel16 high byte. `$4F` is reserved.
+**Encoding:** `$40–$4E lo hi` is three-byte rel16 ; `$60–$6E disp8`
+is two-byte rel8 . Both use identical condition order. `$4F` and
+`$6F` are reserved and reject before any displacement fetch.  See the
+[selection and relaxation rules](ISA_ENCODING.md#assigned-short-branches).
 
 ### CALL — Call within the code segment
 
@@ -2010,8 +2072,7 @@ registers and exception state. See the [exact ordered contract](#far-call-and-re
 bounds, both RAM words, following-PC range and target checks follow in order.
 Any failure leaves the frame and ordinary state unchanged before fault entry.
 
-**Encoding:** `$54 pc_lo pc_hi cs 00`, five bytes, working mode only in the
-implementation. Existing near CALL remains `$1F $10 lo hi`.
+**Encoding:** `$54 pc_lo pc_hi cs 00`, five bytes. Existing near CALL remains `$1F $10 lo hi`.
 
 ### CMP — Compare words
 
@@ -2071,7 +2132,7 @@ bootstrap probes also use the specified Stack Boundary and Memory Access faults.
 Common next-PC and atomic-commit rules apply to every transfer and command.
 
 **Encoding:** `$1F ($A0+rn) selector8` for GETC and `$1F ($B0+rn) selector8` for
-SETC; three bytes each. No assigned legacy context tag or selector is changed.
+SETC; three bytes each. No assigned base context tag or selector is changed.
 
 ### GETX — Read the active exception frame
 
@@ -2087,7 +2148,7 @@ GETX context,rn
 
 **Exceptions:** Inactive context raises Invalid State; U execution raises Privilege first. Unknown selectors or reserved register-byte bits raise Illegal Instruction. All entries also obey the common fetch, decode and commit rules.
 
-**Encoding:** Legacy: `$1F ($20+index) 00000rrr`, index $00–$14. Extended:
+**Encoding:** Base: `$1F ($20+index) 00000rrr`, index $00–$14. Extended:
 `$1F ($80+rn) index8` for assigned extended readable indices. Both are three
 bytes; see [extended context encoding](#extended-context-encoding).
 
@@ -2174,7 +2235,9 @@ MOV.W ea,rn     ; or MOV.W rn,ea
 
 **Exceptions:** Illegal bank/form fields raise Illegal Instruction. Internal-state, stack, memory and selected-PC checks follow the common priority; privilege and rights checks apply. No partial memory write commits. All entries also obey the common fetch, decode and commit rules.
 
-**Encoding:** Compact B0 moves use `0001ssdd` with distinct selectors; bank transfers use `$10`; immediate/memory forms use `$15`. See their encoding tables.
+**Encoding:** Compact B0 moves use `0001ssdd` with distinct selectors; bank
+transfers use `$10`; immediate/long-SP/other-memory forms use `$15`; working
+compact SP uses `$28`. See [compact SP encoding](#28-compact-sp-memory-transfers).
 
 ### MOV complement — Complement a word
 
@@ -2288,7 +2351,7 @@ Use only for the topmost matching CALLF frame after releasing callee locals.
 State, which precedes target Memory Access. Failure pops nothing; see the
 [exact ordered contract](#far-call-and-return-contract).
 
-**Encoding:** `$55`, one byte, working mode only in the implementation.
+**Encoding:** `$55`, one byte.
 Near RET remains `$1F $11`; IRET remains the separate exception-return operation.
 
 ### SAR, SHL, SHR — Shift a word by one bit
@@ -2360,12 +2423,10 @@ Access fault; an unassigned tag is Illegal Instruction before count fetch.
 No destination/flag changes commit on a fault. Even count zero requires a
 representable next: PC=$FFFC can finish at $FFFF; PC=$FFFD fetches fully but
 fails next=$10000, unless an invalid count takes earlier priority.
-These are ordinary U/K operations, with no new privilege class; protected
-execution enforcement is implemented in working mode.
+These are ordinary U/K operations with no new privilege class. Apply the
+ordinary protected fetch and selected-PC validation rules.
 
-**Encoding:** Three bytes: `$1A tag count8`, assigned below. All forty tags
-require working mode in the implementation; legacy 0.4/0.5 reject at the
-tag without fetching count. See [conformance vectors](ISA.md#conformance-immediate-count-shifts-and-rotates)
+**Encoding:** Three bytes: `$1A tag count8`, assigned below. All forty tags are assigned in the working ISA. See [conformance vectors](ISA.md#conformance-immediate-count-shifts-and-rotates)
 and [working examples](ISA_EXAMPLES.md#immediate-shift-and-rotate-examples).
 
 ### SBC, SUB — Subtract words
@@ -2399,7 +2460,7 @@ SETX rn,context
 
 **Exceptions:** Inactive context raises Invalid State; U execution raises Privilege first. Read-only/unknown selectors or reserved register-byte bits raise Illegal Instruction. All entries also obey the common fetch, decode and commit rules.
 
-**Encoding:** Legacy: `$1F ($40+index) 00000rrr`, index $00–$10. Extended:
+**Encoding:** Base: `$1F ($40+index) 00000rrr`, index $00–$10. Extended:
 `$1F ($90+rn) index8` for indices $20–$22 only. Both are three bytes; see
 [extended context encoding](#extended-context-encoding).
 
@@ -2443,11 +2504,13 @@ before those forms are advertised as executable.
 | SHLI/SHRI/SARI/ROLI/RORI, byte or word | 3 |
 | ADDP to r4–r7/DP; ADJSP; SWI | 2 |
 | PUSH, POP, RET, IRET; JS r4–r7 | 2 |
-| Conditional branch, BRA; JS addr16 | 3 |
+| Conditional branch/BRA rel8 (working) | 2 |
+| Conditional branch/BRA rel16; JS addr16 | 3 |
 | GETX, SETX, GETC, SETC; MOV.B immediate load | 3 |
-| B1 indirect load/store without displacement, byte or word | 3 |
+| B1 indirect load/store with simm6, byte or word | 3 |
 | MOVU load/store without displacement, byte or word | 3 |
-| MOV.W immediate load; absolute/DP/SP memory load/store, byte or word | 4 |
+| Working SP off8 memory load/store, byte or word | 3 |
+| MOV.W immediate load; absolute/DP/off16-SP memory load/store, byte or word | 4 |
 | CALL addr16 | 4 |
 | JL abs32; CALLF abs32 | 5 |
 | B1 indirect load/store with disp16, byte or word | 5 |
@@ -2461,7 +2524,7 @@ This map shows every assigned primary byte in the working instruction set.
 Assigned control/context and MOVU families are included. Unassigned extension
 proposals do not appear until their layouts are defined.
 
-Rows are the high nibble and columns the low nibble. `R` means reserved and raises Illegal Instruction immediately. `MV` is a one-byte accumulator move; `E10/E15/E1A/E1F/E27` select extension tables below. `AP4–AP7` and `APD` are two-byte ADDP operations targeting r4–r7 and DP; `ASP` is two-byte ADJSP. E27 is MOVU.
+Rows are the high nibble and columns the low nibble. `R` means reserved and raises Illegal Instruction immediately. `MV` is a one-byte accumulator move; `E10/E15/E1A/E1F/E27/E28` select extension tables below. `AP4–AP7` and `APD` are two-byte ADDP operations targeting r4–r7 and DP; `ASP` is two-byte ADJSP. E27 is MOVU; E28 is compact SP.
 
 For the [immediate ALU forms](#immediate-alu-instructions), each cell
 names the operation and width; the low two opcode bits select destination r0–r3
@@ -2472,11 +2535,11 @@ in order within each four-byte group. `.B` has one following immediate byte
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | NOP | HALT | DI | EI | R | R | R | R | R | R | R | R | R | R | R | R |
 | 1 | E10 | MV | MV | MV | MV | E15 | MV | MV | MV | MV | E1A | MV | MV | MV | MV | E1F |
-| 2 | AP4 | AP5 | AP6 | AP7 | APD | ASP | SWI | E27 | R | R | R | R | R | R | R | R |
+| 2 | AP4 | AP5 | AP6 | AP7 | APD | ASP | SWI | E27 | E28 | R | R | R | R | R | R | R |
 | 3 | R | R | R | R | R | R | R | R | R | R | R | R | R | R | R | R |
 | 4 | BEQ | BNE | BCS | BCC | BMI | BPL | BVS | BVC | BHI | BLS | BGE | BLT | BGT | BLE | BRA | R |
 | 5 | R | R | JS | JL | CALLF | RETF | R | R | R | R | R | R | R | R | R | R |
-| 6 | R | R | R | R | R | R | R | R | R | R | R | R | R | R | R | R |
+| 6 | BEQ.S | BNE.S | BCS.S | BCC.S | BMI.S | BPL.S | BVS.S | BVC.S | BHI.S | BLS.S | BGE.S | BLT.S | BGT.S | BLE.S | BRA.S | R |
 | 7 | R | R | R | R | R | R | R | R | R | R | R | R | R | R | R | R |
 | 8 | ADDI.B | ADDI.B | ADDI.B | ADDI.B | ADDI.W | ADDI.W | ADDI.W | ADDI.W | SUBI.B | SUBI.B | SUBI.B | SUBI.B | SUBI.W | SUBI.W | SUBI.W | SUBI.W |
 | 9 | CMPI.B | CMPI.B | CMPI.B | CMPI.B | CMPI.W | CMPI.W | CMPI.W | CMPI.W | ANDI.B | ANDI.B | ANDI.B | ANDI.B | ANDI.W | ANDI.W | ANDI.W | ANDI.W |
@@ -2496,7 +2559,7 @@ it grants no executable encoding. The companion
 [allocation budget](ISA_ENCODING.md#opcode-allocation-budget) costs symbolic
 future families separately from these assignments.
 
-The primary map has 95 assigned values, including five escapes, and 161
+The primary map has 111 assigned values, including six escapes, and 145
 unassigned values. A selected form may still fail a reserved operand field or a
 later state/memory check. Counts describe matching byte values, not mnemonics or
 successful executions.
@@ -2510,12 +2573,14 @@ successful executions.
 | ADJSP | `$25` | 1 |
 | SWI | `$26` | 1 |
 | MOVU descriptor escape | `$27` | 1 |
+| Compact SP descriptor escape, working only | `$28` | 1 |
 | rel16 branches, including BRA | `$40–$4E` | 15 |
+| rel8 branches, including BRA, working only | `$60–$6E` | 15 |
 | JS immediate | `$52` | 1 |
 | JL immediate | `$53` | 1 |
 | CALLF / RETF | `$54–$55` | 2 |
 | Immediate ALU, six operations × two widths × four B0 registers | `$80–$AF` | 48 |
-| **Total assigned** | Disjoint ranges above | **95** |
+| **Total assigned** | Disjoint ranges above | **111** |
 
 The immediate ALU family uses **48/256 = 18.75%** of primary space. Retain these
 assigned bytes and the two-byte `.B` / three-byte `.W` instruction lengths.
@@ -2524,31 +2589,28 @@ Moving them under a descriptor is not required by the current allocation budget.
 | Available primary range | Count |
 |---|---:|
 | `$04–$0F` | 12 |
-| `$28–$3F` | 24 |
+| `$29–$3F` | 23 |
 | `$4F–$51` | 3 |
-| `$56–$7F` | 42 |
+| `$56–$5F` | 10 |
+| `$6F` (reserved rel8 condition) | 1 |
+| `$70–$7F` | 16 |
 | `$B0–$FF` | 80 |
-| **Total available** | **161** |
+| **Total available** | **145** |
 
 The machine-readable payload covers all assigned working encodings:
 
 | Encoding table | Inspected byte | Assigned values | Unassigned values |
 |---|---|---:|---:|
-| Working primary map | First byte | 95, including five escapes | 161 |
-| Tool metadata primary union | First byte | 95, including five escapes | 161 |
-| Legacy 0.5 primary availability | First byte | 44, including four escapes | 212 |
+| Working primary map | First byte | 111, including six escapes | 145 |
 | `ext10` | Second byte after $10 | 224 | 32 |
 | `ext15` | Second byte after $15 | 240 | 16 |
-| `ext1a` (working / metadata union) | Second byte after $1A | 80 | 176 |
-| `ext1a` (legacy 0.4/0.5 modes) | Second byte after $1A | 28 | 228 |
+| `ext1a` | Second byte after $1A | 80 | 176 |
 | Working `ext1f` | Second byte after $1F | 93 | 163 |
-| Tool metadata `ext1f` | Second byte after $1F | 93 | 163 |
 | Working `ext27` | Second byte after $27 | 64 | 192 |
+| Working `ext28` | Second byte after $28 | 32 | 224 |
 
-The tool primary union includes `$00–$03`, `$10–$27`, `$40–$4E`, `$52–$55`
-and `$80–$AF`. Working mode enables the complete assigned map. Legacy 0.5
-retains 44 primary values and rejects new primary/secondary forms at the first
-unavailable inspected byte. The sixth table ext27 is enabled only in working mode.
+The primary map includes `$00–$03`, `$10–$28`, `$40–$4E`, `$52–$55`
+`$60–$6E` and `$80–$AF`. All assigned entries are available; seven decode tables are represented in total.
 
 | Secondary table | Assigned second-byte ranges | Available second-byte ranges |
 |---|---|---|
@@ -2557,14 +2619,16 @@ unavailable inspected byte. The sixth table ext27 is enabled only in working mod
 | `ext1a` | `$00–$13`, `$20–$23`, `$30–$33`, `$40–$4B`, `$60–$87` | `$14–$1F`, `$24–$2F`, `$34–$3F`, `$4C–$5F`, `$88–$FF` |
 | `ext1f` | `$00–$12`, `$20–$34`, `$40–$50`, `$60–$63`, `$80–$87`, `$90–$97`, `$A0–$A7`, `$B0–$B7` | `$13–$1F`, `$35–$3F`, `$51–$5F`, `$64–$7F`, `$88–$8F`, `$98–$9F`, `$A8–$AF`, `$B8–$FF` |
 | `ext27` | `(byte & $03) == 0`: `$00,$04,…,$FC`, 64 values | `(byte & $03) != 0`, 192 values |
+| `ext28` | `$30–$3F`, `$70–$7F`, 32 values | `$00–$2F`, `$40–$6F`, `$80–$FF`, 224 values |
 
 Reserved operand fields do not increase these primary or secondary capacities:
 
 | Existing selected form | Legal later-byte values | Reserved-field accounting |
 |---|---|---|
-| B1 base selector after `$15` B1 form | Four values, `000000pp` | 252 of 256 third-byte values are illegal per selected second byte; compact B1 would reuse some of these fields, not allocate a new primary |
-| GETX/SETX register byte | Eight values, `00000rrr` | 248 of 256 third-byte values are illegal per selected context tag; this does not widen the legacy context selector |
-| Extended GETX/SETX index byte | GETX: 21 new indices; SETX: three writable indices | 235 read indices and 253 write indices are illegal per selected tag; legacy words have no extended aliases |
+| Working B1 a=0 after `$15` | All 256 values, `ddddddpp` | 64 secondary tags × 256 descriptors = 16,384 three-byte combinations |
+| B1 a=1 | Four values, `000000pp` | 252 high-bit descriptor values remain illegal per selected secondary tag; long-form rejection precedes displacement fetch |
+| GETX/SETX register byte | Eight values, `00000rrr` | 248 of 256 third-byte values are illegal per selected context tag; this does not widen the base context selector |
+| Extended GETX/SETX index byte | GETX: 21 new indices; SETX: three writable indices | 235 read indices and 253 write indices are illegal per selected tag; base words have no extended aliases |
 | GETC/SETC selector byte | Assigned control IDs with matching direction | Unknown IDs, GETC of command, and SETC of read-only controls are illegal at the third byte; reserved neighboring secondary tags are already illegal at the second byte |
 | MOVU B1 base byte | Four values, `000000pp` | 252 third-byte values are illegal for each of 64 selected second-byte values; reject before any displacement fetch |
 | JL/CALLF packed target's high byte | Zero only | Nonzero is Invalid State after complete fetch, not spare opcode capacity |
@@ -2650,21 +2714,91 @@ Assembly uses `MOV.B` or `MOV.W` for immediate/memory width; unsuffixed immediat
 #### B1 indirect forms (bit 7 = 1)
 
 ```text
-$15 1 d s a z rrr 000000 pp [disp16]
+a=0: $15 1ds0zrrr ddddddpp          ; working signed-six-bit displacement
+a=1: $15 1ds1zrrr 000000pp lo hi    ; signed-16-bit displacement
 ```
 
-The second byte is `1dsazrrr`. d/z/rrr have the same meanings as above. s at bit 5 selects DS=0 or CS=1. a at bit 4 selects no displacement=0 or a following signed 16-bit displacement=1. The third byte contains a two-bit B1 base selector pp (`00=r4` through `11=r7`); its upper six bits must be zero. When present, disp16 follows the base-selector byte in little-endian order.
+The second byte is `1dsazrrr`. d/z/rrr have the same meanings as above. s at
+bit 5 selects DS=0 or CS=1. The low two descriptor bits pp select r4–r7.
+a=0 sign-extends descriptor bits 7–2 as -32..31; a=1 requires
+zero upper descriptor bits and appends little-endian disp16.
+Nonzero high bits in a long descriptor raise Illegal
+Instruction immediately at byte 2, before any displacement fetch.
 
-The instruction is three bytes without a displacement and five with one, for either byte or word transfers. A missing displacement means zero. Assemblers use the shorter form for a zero displacement. Invalid selector-byte bits raise Illegal Instruction before any displacement is fetched. Complete effective-address and memory checks precede all effects. CS and DS used here are sampled from the instruction's input state.
+Assemblers select three bytes for working offsets -32..31 inclusive and five
+bytes otherwise. Both widths and
+both directions follow this rule. Existing zero-displacement bytes are unchanged.
+Raw long forms remain valid for every signed-16-bit value, including zero and
+short-range values; working disassembly canonicalizes them to short assembly.
+Retain the raw image when noncanonical byte preservation is required.
 
-| Syntax | Bytes | Meaning |
+Compute `old_base + signed_displacement` in a wider signed type. Reject negative
+or greater-than-65535 offsets and accesses whose final byte crosses the segment;
+never wrap. Sample source registers, base, CS and DS from the input state, including
+base/value aliases. Byte loads zero-extend; word transfers, flags, permissions,
+MMIO preflight/commit rules and precise fault ordering are unchanged. Validate
+fetch/decode, operands and selected following PC before committing effects.
+MOVU does not acquire the compact displacement: its high base bits remain reserved.
+
+| Syntax (working canonical) | Bytes | Meaning |
 |---|---|---|
 | `MOV.W [ds:r4],r0` | `15 80 00` | Load a word through DS:r4 |
-| `MOV.W r1,[ds:r5+2]` | `15 D1 01 02 00` | Store a word through DS:(r5+2) |
+| `MOV.W r1,[ds:r5+2]` | `15 C1 09` | Store a word through DS:(old_r5+2) |
 | `MOV.B [cs:r6],r2` | `15 AA 02` | Load a zero-extended byte through CS:r6 |
-| `MOV.W [cs:r6-2],r2` | `15 B2 02 FE FF` | Load a word through CS:(r6-2) |
+| `MOV.W [cs:r6-2],r2` | `15 A2 FA` | Load a word through CS:(old_r6-2) |
+| `MOV.W [r4-32],r0` | `15 80 80` | Smallest short displacement |
+| `MOV.W [r4+31],r0` | `15 80 7C` | Largest short displacement |
+| `MOV.W [r4-33],r0` | `15 90 00 DF FF` | Long negative fallback |
+| `MOV.W [r4+32],r0` | `15 90 00 20 00` | Long positive fallback |
 
 These are memory transfers and do not change control flow. Register-target JS uses the separate `$1F $60–$63` forms below.
+
+### `$28`: compact SP memory transfers
+
+```text
+$28 0d11zrrr off8
+```
+
+This working-only escape reuses the SP MOV direction/width/register descriptor:
+d=0 loads and d=1 stores; z=0 transfers a word and z=1 a byte; rrr selects r0–r7.
+The second byte must be $30–$3F or $70–$7F. Every other value raises Illegal
+Instruction immediately, before offset fetch.  The third byte is an **unsigned** offset 0..255 for both
+transfer widths; $FF means +255, never -1. Both widths/directions are three bytes.
+
+Sample the original SP, SS, bounds and store source before any effects. Form
+`start = old_SP + zero_extend(off8)` in a wide type, require SB≤SP≤ST and the
+whole transfer inside [SP,ST), then apply SS translation, rights, RAM backing
+and selected following-PC checks exactly as for off16. Preserve SP, SB, ST, SS,
+other registers and all flags; byte loads zero-extend and stores use the selected
+low byte/word. A failed load/store commits no ordinary effects or retirement tick.
+SP accesses cannot perform MMIO, even if their offset names a device register.
+
+Complete fetch/decode precedes stack checks; stack failures precede translation
+and resulting-PC failures. Missing valid offset bytes raise fetch Memory Access;
+reserved secondary values still reject first. SS translation failures retain the
+original virtual start, width and exact relevant-byte metadata. Protected U entry
+uses the independent K stack. A bad K stack can also make exception entry fail;
+the terminal diagnostic retains the original captured fault.
+
+Working assembly selects off8 for 0..255 and the existing `$15 0d11zrrr lo hi`
+off16 form for 256..65535; negative or greater-than-65535 offsets reject. Raw long forms for 0..255 remain valid and
+noncanonical: disassembly reports their original length four, but reassembly in
+working mode uses three bytes. `.B`/`.W` selects transfer width, not offset width.
+Keep raw images when noncanonical byte preservation is needed.
+
+| Syntax | Working canonical bytes | Meaning |
+|---|---|---|
+| `MOV.W [sp],r0` | `28 30 00` | Word at SS:old_SP; SP unchanged |
+| `MOV.B [sp+255],r7` | `28 3F FF` | Zero-extended byte at SS:(old_SP+255) |
+| `MOV.W r4,[sp+255]` | `28 74 FF` | Store old r4 only if both bytes fit |
+| `MOV.W [sp+256],r0` | `15 30 00 01` | Existing unsigned off16 fallback |
+
+At PC=$FFFD, all three compact bytes fit but next=$10000 fails with no effects;
+at $FFFC, successful next=$FFFF is representable. A simultaneous stack/operand
+failure wins over resulting-PC failure. For long forms these positions are $FFFC
+and $FFFB, respectively. Fetch never wraps. ST is exclusive and at most $FFFF,
+so byte $FFFF cannot be an allocated stack slot; a partially fitting word faults
+before either store byte is written.
 
 ### `$1A`: comparison, shifts, rotates and tests
 
@@ -2688,9 +2822,7 @@ in shift tags are illegal. The following test forms are also assigned:
 
 The low two tag bits select r0–r3. Immediates follow the tag, low byte first.
 All test forms preserve all register bits and C/V/I/E. TST.W is the existing
-OR-self alias under `$10`, with no additional `$1A` tag. In modes 0.4/0.5,
-new tags are illegal immediately after the second byte, without immediate
-fetch. In working mode, a missing immediate is a fetch fault; other unassigned
+OR-self alias under `$10`, with no additional `$1A` tag.  a missing immediate is a fetch fault; other unassigned
 tags remain illegal before operand fetch. `$3F` and `$4C` are reserved neighbors.
 Example bytes: `1A 40`, `1A 46 80`, `1A 49 00 80`.
 
@@ -2709,8 +2841,7 @@ order, word=0 for byte/1 for word, and rd=0–3. The third byte is the complete
 unsigned count, not a reserved-bit field. Exactly 680 streams (forty tags ×
 seventeen counts) are semantically valid; 9,560 count streams select a known
 instruction but fault Invalid State. This allocation consumes no primary bytes.
-`$5F` and `$88` remain reserved and illegal before count fetch. Legacy modes
-reject all new tags at byte 1. Example bytes: `SHRI.W #8,r0 = 1A 6C 08`;
+`$5F` and `$88` remain reserved and illegal before count fetch.  Example bytes: `SHRI.W #8,r0 = 1A 6C 08`;
 `ROLI.W #16,r3 = 1A 7F 10`; `RORI.B #16,r0 = 1A 80 10`.
 See [the normative operation and fault rules](#immediate-count-shifts-and-rotates).
 
@@ -2728,15 +2859,16 @@ opcode simm8
 | $23 | r7 | `ADDP #simm8,r7` | 2 |
 | $24 | DP | `ADDP #simm8,dp` | 2 |
 
-The primary opcode identifies the destination, leaving the entire second byte for a signed two's-complement constant, -128 through 127. B1 uses `0010 00pp` with pp selecting r4–r7; `$24` is the DP form. `$25` is ADJSP, `$26` is SWI, and `$28–$2F` remain reserved. ADDP accepts only r4–r7 and DP, not B0 registers, SP, other internal registers, or memory.
+The primary opcode identifies the destination, leaving the entire second byte for a signed two's-complement constant, -128 through 127. B1 uses `0010 00pp` with pp selecting r4–r7; `$24` is the DP form. `$25` is ADJSP, `$26` is SWI, and working `$28` is compact SP MOV.
+`$29–$2F` remain reserved. ADDP accepts only r4–r7 and DP, not B0 registers, SP, other internal registers, or memory.
 
 Compute `sum = unsigned(old_destination) + s8(simm8)` in a wider type; require `0 <= sum <= $FFFF`. Otherwise raise Invalid State with the instruction address reported, leaving the destination and flags unchanged before fault entry. No segment or memory is accessed and no offset wrapping occurs. A valid sum may point to uninstalled RAM; that is checked on dereference. The DP form uses the same checks and flag behavior as the B1 forms and changes neither DS nor any other register. Alignment and access width do not affect adjustment: +1 advances one byte and +2 advances one word.
 
 Examples: `ADDP #1,r4` is `20 01`; `ADDP #-1,r4` is `20 FF`; `ADDP #2,r7` is `23 02`; `ADDP #-2,dp` is `24 FE`. `INCP` and `DECP` are assembler aliases for ADDP #1 and ADDP #-1 respectively, accepting the same five destinations and using the same two-byte encodings. A signed constant makes a separate subtract-pointer opcode unnecessary. There is no 16-bit immediate form yet; larger updates use multiple ADDP instructions or explicit accumulator arithmetic followed by a transfer back. Only ADDP guarantees checked pointer adjustment; ordinary B0 arithmetic retains its modulo behavior.
 
 The five primary opcodes encode `5 * 256` destination/constant combinations.
-`$1A $40–$43` are reserved and raise Illegal Instruction
-as soon as the secondary byte is fetched; no constant byte is fetched.
+`$1A $40–$43` encode two-byte TST.B r0–r3 .  These tags are
+not escaped ADDP encodings.
 
 ADDP preserves **all** CSR bits, including N/Z/C/V/I/E. It is not an arithmetic comparison or a loop-count test. For example, an intervening ADDP does not disturb CMP flags or a carry intended for ADC.
 
@@ -2838,30 +2970,46 @@ physical address. No speculative read or store is committed in either case.
 
 ### Branches and absolute jumps
 
-Branches are three bytes: `$40+condition`, then little-endian rel16. The assembler encodes `label - next` as a signed 16-bit displacement and rejects out-of-range labels. At `$1000`, `BNE +4` targets `$1007` when taken.
+Long branches use `$40+condition`, then little-endian rel16 (three bytes).
+Working short branches use `$60+condition`, then rel8 (two bytes). `$6F` is
+reserved. Compute
+`target - (instruction_PC + selected_length)` in a wide type; reject rather
+than truncate an out-of-range displacement. At $1000, raw `41 04 00` targets
+$1007, whereas `61 04` targets $1006. Numeric assembly operands denote absolute
+current-CS offsets, not relative adjustments.
+
+`.S` forces short; `.W` forces long. Working unsuffixed branches start long and
+relax using the [fixed-point layout rules](ISA_ENCODING.md#assigned-short-branches).
+ Disassembly prints `.S` or `.W` in
+working mode so reassembly retains branch width, including a deliberately long
+in-range branch;  Labels on CALL,
+JS and CALLF relocate with the same final layout. Full fetch precedes predicate
+selection. Only a taken target is probed for execute permission/backing; an
+untaken branch does not inspect its discarded target. Fetch never wraps and a
+failed selected target/next commits no register, flag or retirement-time effects.
 
 The predicates below evaluate the current CSR flags as specified under
 [conditional branch flag interpretation](#conditional-branch-flag-interpretation).
-The rel16 displacement does not imply a sixteen-bit ALU comparison.
+Neither displacement width implies an ALU comparison width.
 
-| Opcode | Mnemonic | Taken when |
+| Long / short opcode | Mnemonic | Taken when |
 |---|---|---|
-| $40 | BEQ | Z=1 |
-| $41 | BNE | Z=0 |
-| $42 | BCS | C=1; unsigned higher or same |
-| $43 | BCC | C=0; unsigned lower |
-| $44 | BMI | N=1 |
-| $45 | BPL | N=0 |
-| $46 | BVS | V=1 |
-| $47 | BVC | V=0 |
-| $48 | BHI | C=1 and Z=0 |
-| $49 | BLS | C=0 or Z=1 |
-| $4A | BGE | N=V |
-| $4B | BLT | N!=V |
-| $4C | BGT | Z=0 and N=V |
-| $4D | BLE | Z=1 or N!=V |
-| $4E | BRA | Always |
-| $4F | Reserved | Illegal Instruction |
+| $40 / $60 | BEQ | Z=1 |
+| $41 / $61 | BNE | Z=0 |
+| $42 / $62 | BCS | C=1; unsigned higher or same |
+| $43 / $63 | BCC | C=0; unsigned lower |
+| $44 / $64 | BMI | N=1 |
+| $45 / $65 | BPL | N=0 |
+| $46 / $66 | BVS | V=1 |
+| $47 / $67 | BVC | V=0 |
+| $48 / $68 | BHI | C=1 and Z=0 |
+| $49 / $69 | BLS | C=0 or Z=1 |
+| $4A / $6A | BGE | N=V |
+| $4B / $6B | BLT | N!=V |
+| $4C / $6C | BGT | Z=0 and N=V |
+| $4D / $6D | BLE | Z=1 or N!=V |
+| $4E / $6E | BRA | Always |
+| $4F / $6F | Reserved | Illegal Instruction |
 
 `JS addr16` is `$52 lo hi`, length three, and changes PC within current CS. It is a jump, not a call. `JL abs32` is `$53 pc_lo pc_hi cs 00`, length five. Bits 31–24 must be zero or Invalid State is raised; bits 23–16 become CS and bits 15–0 become PC. Both preserve flags.
 
@@ -2869,7 +3017,7 @@ The rel16 displacement does not imply a sixteen-bit ALU comparison.
 length one. They use the [four-byte far frame](#far-call-and-return-contract),
 unchanged mode/map authority and atomic stack/target checks. CALLF preserves the
 original CS/next for RETF; JL creates no return frame. Primary `$56` remains
-reserved. Both new forms require working mode in the implementation.
+reserved. Both new forms are assigned.
 
 ### `$1F`: stack, calls, register jumps, and exception context
 
@@ -2889,7 +3037,7 @@ reserved. Both new forms require working mode in the implementation.
 | $B0–$B7 | `SETC rn,control` | 3 | rn=second byte minus $B0; assigned writable selector follows |
 | All others | Reserved | — | Illegal Instruction |
 
-Legacy GETX/SETX use a third byte `0000 0rrr`; upper five bits must be zero.
+Base GETX/SETX use a third byte `0000 0rrr`; upper five bits must be zero.
 Extended forms instead use the full index byte described below. Both families
 copy one word between a GPR and the active top frame, preserve flags, and require
 E=1 in K. With E=0 they raise Invalid State; legal U execution raises Privilege
@@ -2920,17 +3068,17 @@ legal fetch/decode precedes K privilege, active-top-frame validation, and ordina
 next-PC checks; no access/write commits on failure.
 
 GETX/SETX assembly accepts an assigned context name or unsigned eight-bit selector
-literal without `#`, then chooses legacy bytes for `$00–$14` or extended bytes
+literal without `#`, then chooses base bytes for `$00–$14` or extended bytes
 for the new words. SETX accepts only writable selectors in either family.
 Unknown selectors, illegal access direction, nongeneral registers, and size
-suffixes are rejected. There is no forced extended alias for a legacy word.
+suffixes are rejected. There is no forced extended alias for a base word.
 
 Examples: `GETX xprocess_map,r2` is `1F 82 20`;
 `SETX r7,xuaccess_segment` is `1F 97 22`;
 `GETX xpriv_class,r0` is `1F 80 29`; `GETX xreason,r3` is `1F 83 3A`.
 `1F 90 23` is an illegal provenance write, including in U or with E=0.
-`1F 80 14` is illegal, not another encoding of legacy xtrap. Legacy
-`GETX xtrap,r0` remains `1F 34 00`, and legacy `1F 54` remains illegal before a
+`1F 80 14` is illegal, not another encoding of xtrap.
+`GETX xtrap,r0` is `1F 34 00`, and `1F 54` remains illegal before a
 third-byte fetch. At PC=`$FFFD`, a valid three-byte extended form fetches fully
 but faults its resulting PC without modifying register/frame state; state and
 privilege faults still take their earlier specified priority.
@@ -2945,7 +3093,7 @@ SETC: $1F 10110rrr selector8   ; $B0–$B7, rrr selects r0–r7
 ```
 
 Both are three bytes. The third byte is the full control selector, not a GPR
-descriptor or a legacy five-bit context index. Exact selector/command numbers
+descriptor or a base five-bit context index. Exact selector/command numbers
 are in the [control tables](#control-selectors-and-reset-values). A read of a
 write-only selector or write of a read-only selector is Illegal Instruction when
 selector8 is fetched. SETC's command value is register data: an unknown command
@@ -2955,7 +3103,7 @@ Every unassigned `$1F` secondary tag remains illegal without fetching a third
 byte. Within `$80–$BF`, `$80–$87` and `$90–$97` are assigned extended context
 tags, `$A0–$A7` and `$B0–$B7` are assigned controls, and the four intervening
 eight-value groups remain reserved; the reserved bit is never an alternate bank.
-Legacy GETX/SETX retain all existing bytes.
+Base GETX/SETX retain all existing bytes.
 
 Examples: `GETC process_map,r2` is `1F A2 00`; `SETC r7,uaccess_map` is
 `1F B7 01`; `SETC r0,command` is `1F B0 7F`. `1F A8` is immediately illegal;
@@ -3062,8 +3210,10 @@ kernel routine with CALL without creating another protected exception frame.
 
 ### User-buffer copy and recovery ABI
 
-This software ABI example uses assigned instructions, not current production
-tool/emulator support. The kernel owns the fixup registry, map-generation lease,
+This illustrative software ABI uses assigned working-mode instructions.
+[Appendix C](#implementation-status-and-remaining-work) distinguishes this printed
+copy/retry fixture from the executable one-word kernel demo. The kernel owns
+the fixup registry, map-generation lease,
 buffer bounds, and repair/error policy; none is a CPU lookup mechanism.
 
 Fixture: a U process in published map 7 calls a buffer-read service with byte
@@ -3341,6 +3491,113 @@ must not change validity or reuse semantics. In this single-CPU machine, DI plus
 pinned state can protect the replacement window; synchronous handlers must honor
 the same locks or abort to an established fixup instead of invalidating its maps.
 
+### Guest control-management library ABI
+
+This software ABI defines the pinned guest implementation in
+[kernel_controls.asm](../examples/kernel_controls.asm), with the calling/placement
+reference in [ISA_EXAMPLES.md](ISA_EXAMPLES.md#guest-control-management-library).
+It uses existing ISA instructions; it is not a CPU ownership lock, new privilege,
+control selector or multi-instruction atomicity guarantee.
+
+Callers execute K code with CS=DS=SS=0 and a valid pinned stack with enough space
+for helper calls. Code, vector/recovery paths, request blocks, journal, lease and
+scope records must remain pinned. Ordinary descriptor operations cannot edit
+kernel selectors 0/$FF; entry_configuration accepts DS=SS=0 and kernel bounds
+with SB at least $C000 and ST at most $FFFE. This implementation's allocation
+policy and fixed placement protect its own code/data/stack; a larger kernel can
+provide another implementation of the ownership ABI with different placement.
+
+The API preserves r4–r7, SP and caller NZCVI; r0 returns status and r1 reports
+whether a durable requested effect remains. r2/r3 are scratch. A CALL does not
+implicitly select a different map or borrow user memory. r4 points to a pinned
+kernel request. Status is OK=0, INVALID=1, BUSY=2, FAULT=3 or STALE=4.
+Success has r1=1. Rejected validation/ownership/generation checks have r1=0.
+Recovered command failures report FAULT; callers must inspect r1, because an
+already completed descriptor/map/entry/query/bootstrap command is not undone.
+
+Each operation saves caller flags, disables IRQs, rejects an occupied library
+lock or depth eight without waiting, reserving capacity for a recovery frame, then captures descriptor selection/seven shadow words,
+five entry-shadow words and the two backing-address words. Exception entry does
+not save this scratch. Cleanup restores the captured writable words exactly,
+including partially staged or inconsistent descriptor relationships, before
+releasing ownership and restoring flags. It does not replace these shadows with
+committed readback. Active entry/descriptor changes are intended command effects.
+A pending IRQ can enter after release/I restoration, including before the final
+RET; all shared state must already be consistent then.
+
+Map records contain 16-bit generation and reference counts plus FREE/LIVE/
+QUARANTINED state. Publication establishes the first nonzero generation; map
+invalidation requires zero leases and no live/saved CPU references checked by the
+helper, advances the generation and clears grants. Nested depth above one refuses
+invalidation because lower frame controls are not directly inspectable. PCB and
+continuation owners must hold explicit leases for all resumable images. Invalidate
+cannot replace that software lifetime accounting. Generation exhaustion quarantines
+the ID rather than wrapping; it cannot be republished in the same boot epoch.
+Trusted kernel code must allocate safe backing and validate ownership/candidate
+return images; these helpers are not an allocator or complete scheduler validator.
+
+A user-access begin validates a live map/generation, acquires one lease and records
+prior access controls in a depth-indexed scope. End validates that same handle,
+restores prior controls, and releases exactly that reference. A nested fault
+handler can clear live access through the library without destroying the lower
+scope; its owner releases that scope after returning to its registered fixup.
+Saved-frame access controls still require explicit SETX repair. PCB leases and
+copy scopes are distinct references.
+
+Synchronous recovery requires the matching owner depth, K-origin saved context,
+CS=0 and an exact generated instruction-PC/cause/access/phase registry match.
+A missing branch/call/return destination reports its transferring instruction
+PC and CONTROL_TARGET phase; recovery additionally requires a registered
+operation target. Four pinned-finisher RET sites admit only that target fault,
+not a failed fetch of the finisher itself. The handler redirects only that K
+frame to pinned compensation code, which
+unwinds internal CALLs to a saved SP before restoring staging. Descriptor/map/
+entry/query/bootstrap effects retain their committed status; publication and
+invalidation finish generation bookkeeping idempotently. Aborted begin/acquire/
+release operations compensate their lease/scope changes. An interrupted end that
+passed its readiness checks finishes teardown once. This is software recovery,
+not rollback of a whole instruction sequence. A fault in unregistered prologue,
+cleanup or recovery code violates the pinning precondition and takes the fatal
+kernel path. No broad catch-all resumes an unknown K fault.
+
+Backing-query result latches remain caller-clobbered hardware state. A helper
+holds ownership through query and copying kind/run/valid into caller RAM, then
+restores the address shadow. It cannot restore the read-only latch, especially
+its original valid=0 state. A nested library query returns BUSY without clobbering
+it; the caller retries after ownership is released. Outputs are usable only with
+OK and the completed-output marker; a post-command copy fault returns FAULT/1
+with partial output rejected. Direct nested query commands violate this ABI.
+
+Reset-boot initialization is a separate exclusive path: I=0, no active frame,
+process/user-access maps zero, entry unconfigured and every nonzero map
+unpublished. It preserves hardware staging while checking these preconditions,
+then clears old software journals/leases/scopes. Boot must discard old PCB/request
+handles and rebuild them; initialization is not a runtime shortcut for retiring
+processes. MMIO timer staging is outside this CPU-control library's ownership.
+
+### Blocking console continuation ABI
+
+The [executable console guest](ISA_EXAMPLES.md#console-guest-layout-and-software-abi)
+defines a pinned two-process software ABI using the existing controls and saved
+context. A request records owner/map generation, destination, maximum/progress,
+status and READ_RETURN continuation, with a separate lifetime lease. Only a
+validated outermost U-origin frame may be replaced; nested K handlers complete
+stored requests and defer scheduling. The [scheduling invariants](ISA_EXAMPLES.md#scheduling-and-replay-invariants)
+specify the rollback image, idle wake window, cancellation ordering and byte
+consumption on a precise MOVU failure. This is a software convention, not a new
+protected-frame format or CPU control assignment.
+
+### SmallC workload calling convention
+
+The [SmallC ABI](ISA_EXAMPLES.md#smallc-calling-and-checked-pointer-abi) uses r0 for
+returns, caller-clobbered B0/NZCV, callee-saved B1 and caller-cleaned word argument
+slots. Its baseline assigns locals to SS frames and tracks transient expression
+stack depth. DS/SS near-pointer types retain their address space; checked pointer
+formation precedes memory access. A dedicated compiler source-failure trap is a
+software convention, independent of hardware Memory exception semantics. The
+[executed corpus](ISA_EXAMPLES.md#current-workload-measurements) establishes
+costs and limitations before compact instruction adoption.
+
 ## Appendix B. Unassigned extension proposals
 
 **Informative; not part of the assigned instruction set.** The following records
@@ -3351,127 +3608,112 @@ in Chapters 8–9 have advanced beyond this stage.
 
 ### Extension status and retained evidence
 
-The retained [density evidence](ISA_EXAMPLES.md#code-density-evidence) supports
-the extension directions below. Immediate ALU byte/word forms are assigned in Chapter 9; the remaining [encoding proposals](ISA_ENCODING.md#unassigned-encoding-proposals)
-remain symbolic. The imm4 study sizes do not measure the assigned width-specific immediate forms.
-Reserved descriptor bits remain illegal until a compact format is assigned.
-Candidate primary families have no numeric allocation to decode.
+Immediate ALU, TST/TSTI, CALLF/RETF, immediate shifts/rotates, compact B1/SP
+memory forms and short branches are assigned in Chapters 8–9. This appendix
+contains only unassigned candidates; no proposal spelling grants executable bytes.
 
-| Form | Disposition and semantics | Constraints and conformance |
+| Candidate | Disposition | Requirements before adoption |
 |---|---|---|
-| rel8 branches | Approved extension direction: two bytes, all fifteen conditions, signed -128..127 from the selected instruction end | Retain rel16. Relax forward/backward branches iteratively; support forced short/long forms; test endpoints, cascading shrink, segment ends and execute faults. New opcode family remains unassigned. |
-| B1 simm6 | Approved extension direction: a=0 descriptor `ddddddpp` carries signed -32..31; a=1 retains disp16 and zero upper descriptor bits | Existing zero-displacement bytes are identical. Test -32/31, long fallback -33/32, CS/DS selection, base/value aliases and atomic protection faults. Machine-readable metadata remains to be added. |
-| SP uimm8 | Approved extension direction: three-byte byte/word load/store with unsigned 0..255 slot offset | Retain off16 and identical allocation/SS/protection checks. Test 0/255/256, negative rejection and failed-word-store atomicity. New family remains unassigned. |
-| Immediate ALU `.B`/`.W` | Assigned above: six operations, 8-bit or 16-bit immediate and operation width; two or three bytes | `$80–$AF`; exact width-specific flags and byte-result zero-extension. |
-| TST/TSTI `.B`/`.W` | Assigned: unary byte test, immediate byte/word tests; unary word alias | Twelve `$1A $40–$4B` tags; implemented in working mode. [Review evidence](ISA_EXAMPLES.md#test-instruction-review-and-measurements). |
-| B1 post-increment | Deferred pending compiler/runtime evidence despite copy-loop savings | If adopted, update by width; reject a load whose destination is its base; stores sample the old source/base. Validate pointer adjustment before transfer, commit both together, preserve flags, and never permit segment wrapping or an unrepresentable final pointer. |
+| Checked register-to-pointer add | Deferred after [software measurement](ISA_EXAMPLES.md#checked-register-to-pointer-arithmetic-decision) | Pointer residency/register allocation and an explicit overflow-error ABI; the studied unsigned contract is below |
+| B1 post-increment | Deferred | Measure compiler/runtime benefit; width-based checked update, old source/base sampling, no ambiguous load/base alias and atomic transfer/update |
+| General B1 ALU, multiply/divide, register-count shifts/rotates, through-carry rotation, indirect CALL and wider pointer/stack immediates | Deferred | Demonstrate a measured software need and review precise faults, flags, numeric encodings, tools and runtime tests |
 
-CALLF/RETF are assigned at `$54/$55` with a four-byte PC/CS return frame and
-implemented in working mode. Their [contract](#far-call-and-return-contract),
-[runnable example](ISA_EXAMPLES.md#far-call-and-near-helper), and [review completion](#review-feedback-and-completion) supersede the earlier unassigned proposal.
+The B1 callee-save ABI remains a software convention. Instruction fusion or code
+relocation can change fault PCs and interrupt observation points; equal successful
+outputs do not establish equal fault/interrupt behavior.
 
-Immediate-count byte/word SHLI/SHRI/SARI/ROLI/RORI are assigned under
-`$1A $60–$87`, with counts 0–16 and three-byte encodings. Their
-[normative semantics](#immediate-count-shifts-and-rotates),
-[executable example](ISA_EXAMPLES.md#immediate-shift-and-rotate-examples) and
-[review completion](#review-feedback-and-completion) supersede the original proposal. Existing one-bit word shifts
-retain their encodings and behavior.
+### Checked register-to-pointer add: deferred design contract
 
-General B1 ALU, multiply/divide, register-count shifts/rotates, through-carry
-rotations, indirect CALL,
-and wider pointer/stack immediates remain deferred. The existing B1 callee-save
-ABI remains a software convention. Code relocation, compact forms and instruction
-fusion can change fault PCs and interrupt observation points; matching successful
-outputs does not establish identical fault/interrupt observation points.
+The current software study evaluated **`ADDP.R ra,rp` as study notation only**. The assembler rejects
+it; no primary, secondary or descriptor value is assigned or held.
+Ordinary ADD remains wrapping B0 arithmetic and immediate ADDP retains its signed
+byte, checked B1/DP semantics and flag preservation.
 
-## Appendix C. Conformance and draft completion
+The studied operation samples an unsigned 16-bit B0 source r0–r3 and the old B1
+destination r4–r7 before any write, adds them in at least 17 bits, and commits
+only a result in 0..65535. The source and every CSR bit remain unchanged. An
+unsigned add cannot underflow; overflow would raise Invalid State, cause/vector 4,
+at the instruction address, with the destination and other ordinary state retained
+before normal exception entry. Both U and K would be legal. DP is excluded because
+the measured sites need B1; it would require separate operand/capacity evidence.
+No segment, mapping, permission, backing or MMIO probe belongs to the operation.
+
+If reconsidered, apply the common ordering: complete legal fetch/decode first,
+then validate the widened sum before the selected following PC, then commit.
+An invalid sum would therefore precede a following-PC fault; a valid sum with an
+invalid following PC would raise Memory Access without committing the destination.
+This preserves instruction-level atomicity, not atomicity across setup moves.
+
+An unsigned source admits indices $8000–$FFFF; interpreting it as signed would
+instead move backward and reject useful high offsets. Signed displacement and
+unsigned subtraction are different operations and are not silently included.
+Negative-index, object-bound, index/scale overflow and access-width checks remain
+software responsibilities. Existing checked subtraction sequences remain valid.
+
+The [study](ISA_EXAMPLES.md#checked-register-to-pointer-arithmetic-decision)
+finds only 16 modeled bytes and 273 retirements saved across successful generated
+programs with a hypothetical two-byte form, while adding 115 explicit bank moves.
+Selecting only five byte-access sites instead saves 13 bytes / 274 retirements
+without extra moves; neither model removes a spill or reload.
+Those savings require replacing the compiler's SWI/code-4 error with Invalid
+State; retaining the software guard makes this substitution larger. Defer until
+a pointer-residency/allocation prototype and an explicit language/kernel fault ABI
+justify adoption against an equally optimized safe baseline. A future adoption
+requires numeric encoding review and full tool/runtime/fault/replay tests.
+
+## Appendix C. Conformance and implementation
 
 Assigned instructions must obey the single working-copy encoding map and ordered
-execution rules. This appendix brings together review completion, current
+execution rules. This appendix brings together current
 implementation evidence and the acceptance requirements. Evidence counts describe
 tests actually run; requirements continue to guide independent conformance audits.
 
-### Review feedback and completion
-
-The architecture review and all six implementation phases are complete. This
-record consolidates their accepted decisions and completion criteria; the
-instruction chapters and encoding payload remain authoritative. Historical
-revision overlays and intermediate task lists no longer define a separate ISA.
-
-| Completed phase | Review response and resulting behavior | Reference |
-|---|---|---|
-| 1. Architectural clarity and budget | Explicit byte zero-extension and width-specific flags; word-only register ALU; width-independent branches; retained 48 immediate opcodes and an allocation ledger | [Conventions](#byte-and-word-operations), [ledger](#opcode-allocation-ledger), [encoding budget](ISA_ENCODING.md#opcode-allocation-budget) |
-| 2. Protected-kernel interfaces | Assigned process-map/descriptor controls, entry/bootstrap, extended context, privilege cause/vector 7, MOVU and the minimum PIC/timer contract | Chapters 3, 5–7 and 9 |
-| 3. Metadata, emulator and conformance | Integrated all assignments in schema 3 and six decode tables; implemented protected execution, precise faults, devices, deterministic host input and artifact verification; added guest kernel integration | [Executed evidence](#executed-implementation-evidence), [metadata validation](ISA_ENCODING.md#validation-and-implementation-use), [kernel demo](ISA_EXAMPLES.md#executable-protected-kernel-demo) |
-| 4. Non-destructive tests | Accepted B0 TST.B/TSTI.B/TSTI.W and OR-self TST.W alias after UART/kernel size and register-pressure comparison | [Instruction contract](#tst-tsti--test-a-register-without-writing-it), [review measurements](ISA_EXAMPLES.md#test-instruction-review-and-measurements) |
-| 5. Intersegment calls | Assigned and implemented CALLF/RETF with atomic four-byte PC/CS frames, preserved near calls and protected target/stack checks | [Far-call contract](#far-call-and-return-contract), [runnable example](ISA_EXAMPLES.md#far-call-and-near-helper) |
-| 6. Immediate-count shifts/rotates | Assigned and implemented SHLI/SHRI/SARI/ROLI/RORI at both widths, counts 0–16, count-zero preservation and precise full-width carry | [Instruction contract](#immediate-count-shifts-and-rotates), [worked results](ISA_EXAMPLES.md#immediate-shift-and-rotate-examples) |
-
-Across these phases, existing assigned encodings, CSR bits, legacy context
-indices and near-call layouts are preserved. Legal fetch/decode precedes
-privilege and operand validation; failed instructions commit no ordinary effects.
-MMIO retains pure preflight and one infallible byte/word transaction at commit;
-the minimal-v1 devices specifically require aligned words. Legacy 0.4/0.5
-remain explicit compatibility modes, with new forms gated to working mode.
-
-Completion required reviewed binary interfaces, matching metadata/tools/runtime,
-executed conformance and accurate coverage reporting, including runnable far-call,
-shift and protected-kernel examples. The retained evidence below and in
-[README.md](../README.md#validation) records the achieved coverage. Future
-instructions longer than five bytes require the
-[consumer-capacity audit](ISA_ENCODING.md#instruction-length-audit) before allocation.
-General register-register byte ALU and further general-purpose expansion remain
-deferred until measured need; UART/storage/input device contracts remain separate
-work. See Appendix B for other unassigned candidates and their constraints.
-
 ### Implementation status and remaining work
 
-The protected-kernel interfaces now have numeric specification assignments.
-Implementation and remaining extension/peripheral work are tracked separately:
+<!-- ISA_IMPLEMENTATION_STATUS_BEGIN -->
+This is the authoritative implementation-status record. The reference emulator,
+assembler/disassembler and generated decoder implement the assigned working ISA.
+Machine profiles are `minimal-v1` and `console-v1`; profile selection changes
+assigned devices and host input, not instruction availability.
 
-| Item | Defined here | Implementation / remaining work |
-|---|---|---|
-| Protected CPU controls | GETC/SETC bytes, selectors, descriptor/map commands, entry tuple, bootstrap, backing queries, and reset/staging rules assigned in Chapters 6/9 | Implemented and tested in working mode; retain independent architecture review |
-| Extended saved context | Three-byte full-index forms, 21 additional words, read-only provenance, numeric fault enums, and ordered validation assigned | Implemented and tested in working mode |
-| Privilege exceptions | Cause/vector 7, operation-class field/enum including MOVU USER_ACCESS, precise entry and clearing rules assigned | Implemented and tested in working mode |
-| User-access transfers | MOVU `$27`, operand layouts, U-permission translation, atomic faults, metadata, and copy/retry/fixup ABI assigned | Implemented and tested in working mode |
-| Interrupts and timer | `minimal-v1` MMIO `$FF0000–$FF00FF`, register/command/reset rules, sources 0–2, deterministic event/replay and idle interfaces assigned in Chapter 7 | Implemented and tested in working mode |
-| Other devices | MMIO preflight/commit, transaction widths and ordering | Console/storage/input device contracts and their replay payloads |
-| Compact candidates | Proposed behavior and compatibility constraints | Final adoption, numeric allocations and machine-readable metadata |
-
-Tools and implementations must use assigned values explicitly, and cannot claim
-complete conformance from the implemented immediate or legacy subset. Remaining
-unassigned extensions/peripherals must not be allocated implicitly from table
-order. The [encoding proposals](ISA_ENCODING.md#unassigned-encoding-proposals)
-and conformance requirements do not grant executable candidate encodings.
-
-### Executed implementation evidence
-
-The reference working emulator and production toolchain now implement the assigned
-protected interfaces. Release and ASan/UBSan runs pass three CTest suites:
-749,338 retained CPU assertions, 3,173,471 protected checks, and twelve
-parameterized Python toolchain tests. The requirements below define acceptance behavior,
-not a claim that every combination in this document has been exhaustively proven.
-
-| Executed area | Evidence |
+| Area | Implementation and executed evidence |
 |---|---|
-| Immediate ALU | All 48 opcodes; all byte operand pairs; seeded boundary word values; arithmetic NZCV, logical CV preservation, I/E, CMPI preservation and signed/unsigned branches |
-| Metadata/tools | Six disjoint maps compared with the normative ledger; schema 3 and five-byte capacity validation; new-family exact bytes, round trips, endpoints, selectors, reserved/truncated bytes and legacy isolation |
-| Controls/maps | Every readable control in every GPR; committed/shadow readback, publication, invalid commit, interrupted staging, invalidation/reuse, map-0 constraints, backing query and entry commit |
-| Context/privilege | All 42 reads and twenty editable words; ten privilege classes; illegal/truncated decode priority; depths 1–8 and overflow; bad IRET, nested repair and candidate rollback |
-| Protection/MOVU | UR/UW and execute-only checks, map/selector 255, 65536 upper bound, U stack policy/far calls/MMIO denial; every structural transfer form/base/register alias; all eight memory reasons; exact second-byte addresses and atomic store/retry |
-| Entry/diagnostics | Bad user stack with independent K entry, vector-read/format/handler/DS/stack failures, retained frames/registers/terminal records and reset RAM preservation |
-| Devices | Thirty assigned starts, every reserved/byte/unaligned read and every word write direction, callback counts and next-PC atomicity; sixteen enable bits, shared-vector source priority, IRQ nesting and independent ACK |
-| Time/replay | Snapshot timing, failed timer commit, D=T+1 expiry, periodic phase/overflow, UINT64 saturation, HALT wake/idle limits, transactional typed/strict JSONL errors and resets, independently checked SHA-256 artifact hashes |
-| Kernel integration | Guest boot, first U return, four timer switches across maps 7/8, two nested copy fixups; deterministic full-state comparison at every boundary and identical final RAM |
+| Core instructions | B0 arithmetic/logic, checked B1/DP adjustment, compact B1/SP accesses, near/far calls, byte/word immediate ALU, TST/TSTI and immediate shifts/rotates execute with precise faults and width-specific flags |
+| Protection | U/K execution, descriptor publication and map selection, privileged controls, MOVU, eight protected exception frames, extended metadata and validated IRET |
+| Devices/replay | Atomic aligned-word PIC/timer MMIO, deterministic retirement time, typed boundary events and artifact-bound replay; console-v1 adds bounded byte input/output and RX interrupts |
+| Guest control library | Descriptor install/remove, map publication/lifetime leases, entry setup, exact-site synchronous-fault recovery and nested access scopes |
+| Kernel demo | Guest boot, two private processes, four timer switches and two nested user-copy fault fixups; state comparison at every boundary and identical final RAM |
+| Console demo | Blocking read, peer progress, recorded input, process wakeup and HELLO output; cancellation/reuse, nested faults and scheduler rollback |
+| SmallC | 27 compiled programs and three assembly references; arrays/structures, near DS/SS pointers, checked errors, calling convention, timer preemption and generated blocking terminal |
+| Measurements | Current artifacts and execution metrics in [ISA_EXAMPLES.md](ISA_EXAMPLES.md#current-workload-measurements); pointer-add models remain unencoded and clearly separate from CPU execution |
 
-The pinned demo does not supply production process lifecycle, software-generation
-leases, allocator locks or a complete copy loop. Those remain kernel ABI policies;
-the requirements below retain broader failure-injection and lifecycle cases for
-future independent conformance audits. Additional devices and unassigned compact
-forms are outside this profile.
+#### Executed implementation evidence
+
+The CMake/CTest suite covers CPU arithmetic and fault atomicity, exhaustive compact
+B1 and SP forms, branch predicates/displacements, protected controls/maps/context,
+MOVU permissions and fault metadata, terminal-entry diagnostics, MMIO transactions,
+timer boundaries, strict host input/replay, kernel/console integration, compiler
+execution and the production toolchain. Run the commands in README to reproduce
+Release or sanitizer builds. The test runner reports current assertion totals;
+totals are not a coverage percentage.
+
+Every published byte listing is regenerated with the production working assembler,
+checked for exact reassembly, and executed by cpu_conformance. Guest assembly is
+assembled during the build. Thirty compiler/reference binaries compare complete
+retained state at every boundary and final RAM with independent replay. Six
+pointer-study tests exercise a mathematical model, including 786,432 base/addend
+pairs; they do not claim conformance of an unassigned instruction.
+
+A production optimizer, dynamic allocator, general process lifecycle and broader
+language/device support remain software work. Additional instruction proposals
+require measured benefit and an explicit encoding/semantics review.
+<!-- ISA_IMPLEMENTATION_STATUS_END -->
 
 ### Architectural conformance requirements
+
+**Default applicability:** All requirements below use the working ISA,
+`minimal-v1`, and K execution unless U or `console-v1` is explicitly named.
+Requirements define behavior; the status record above identifies executed evidence.
 
 - Verify assigned encodings, early rejection of reserved forms and the working-copy primary map.
 - Test privilege checks and exact fault priority in U/K modes.
@@ -3484,16 +3726,18 @@ forms are outside this profile.
 
 #### Conformance: Protected CPU controls and map publication
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 These requirements cover the assigned [control interface](ISA.md#protected-control-interface)
 and [GETC/SETC encodings](ISA.md#protected-control-encoding). They describe required
-acceptance coverage; executed evidence is recorded below and in README.md.
+acceptance coverage; executed evidence is in the [status record](#implementation-status-and-remaining-work).
 For fault cases, install valid entry/recovery state so instruction failure can
 be observed independently of a failed exception entry.
 
 - Cover all sixteen secondary tags `$A0–$A7`/`$B0–$B7` after `$1F`, all eight
   GPRs, every selector, direction permission, command value, and exact reset word.
-  Existing context tags, CSR bits, primary bytes, and supported legacy modes
-  retain their contracts; reject these new tags in modes that do not enable them.
+  Existing context tags, CSR bits, primary bytes, and assigned instruction forms
+  retain their contracts. All assigned control tags decode before U/K checks.
 - Decode `1F A2 00`, `1F B7 01`, and `1F B0 7F` exactly. Reject reserved
   neighboring secondary tags before selector fetch, unknown selectors and wrong
   access directions at selector fetch, and invalid command values after legal
@@ -3544,7 +3788,7 @@ be observed independently of a failed exception entry.
   lifetime/lease, frame initialization, and scheduler rollback policies; no
   control command supplies hardware generations or sequence-wide atomicity.
 - Run the [first-user-return example](ISA.md#protected-control-setup-examples)
-  using only assigned guest controls and legacy SETX fields, then verify isolation
+  using only assigned guest controls and base SETX fields, then verify isolation
   between two maps with identical virtual selectors and different backing frames.
 
 | Case | Input / setup | Required outcome |
@@ -3562,20 +3806,49 @@ be observed independently of a failed exception entry.
 | Entry next-push failure | entry SB=SP=ST=`$1000` | Stack Boundary before DS/SS probes; active tuple unchanged |
 | Query final address | physical `$FFFFFF` | run=1; no physical wrap or device read |
 
+#### Conformance: Guest control-management library
+
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
+These requirements apply to the guest software ABI, not additional CPU interlocks.
+ The [implementation status](#implementation-status-and-remaining-work)
+identifies executed cases and the [library ABI](#guest-control-management-library-abi)
+defines the pinning and lifetime preconditions.
+
+- Verify each public operation's arguments/results, callee preservation, caller
+  interrupt policy, scalar/descriptor/entry validation and initialized ownership.
+- Seed partially staged descriptors, entry shadows and query addresses. Inject
+  faults between writes and before/after command commit; restore every writable
+  scratch word without confusing active readback with interrupted staging.
+- Exercise registered Memory/Invalid/Stack failures and exact owner-depth/PC/
+  access/phase checks. Preserve the lower frame and unwind internal calls. A
+  conflicting nested helper returns BUSY without lock spinning or latch changes.
+- Verify generation/reference accounting, PCB leases, stale-handle rejection,
+  saved/live-reference invalidation guards and generation exhaustion quarantine.
+- Verify user-access begin compensation and idempotent end teardown, including a
+  nested clear followed by owner cleanup. No transient lease or authority leaks.
+- Verify query output completion independently of hardware-latch commit. A failed
+  second-byte output store is atomic; incomplete caller output cannot be trusted.
+- Latch an IRQ while ownership/I=0 are active; it can enter only after restoration
+  and release. Normal demo/replay uses no host register/backing mutation after boot.
+  Failure-injection fixtures deliberately use trusted debugger setup and do not
+  claim those artificial mutations are replay events.
+
 #### Conformance: Extended saved context and privilege exceptions
+
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
 
 The [extended context words/enums](ISA.md#extended-saved-context),
 [binary forms](ISA.md#extended-context-encoding), and
 [Privilege record](ISA.md#privilege-exception-record) are assigned requirements.
-These interfaces are implemented in working mode. USER_ACCESS class 10 applies
-to MOVU; toolchain and protected CPU suites exercise its decode/privilege ordering.
+USER_ACCESS class 10 applies to legal U MOVU execution.
 
 - Cover all eight read tags `$80–$87` and eight write tags `$90–$97` after `$1F`.
   Test 21 readable extended indices and three writable indices with every GPR:
   168 legal read combinations and 24 legal write combinations. Reject the 235
-  other read indices and 253 other write indices for every tag. Legacy indices
-  under extended tags must not become aliases; existing 21 legacy words/bytes
-  and read-only legacy SETX rejection remain unchanged.
+  other read indices and 253 other write indices for every tag. Base indices
+  under extended tags must not become aliases; existing 21 base words/bytes
+  and read-only base SETX rejection remain unchanged.
 - Verify all 42 readable words, the twenty editable words, canonical source
   capture, and full-word readback after temporary invalid saved-map/user-access
   edits. SETX never updates live controls and saved xuaccess_map=0 does not clear
@@ -3589,13 +3862,13 @@ to MOVU; toolchain and protected CPU suites exercise its decode/privilege orderi
   are fetch faults. Test every truncated position and segment/next-PC boundary.
 - Check all numeric origin, phase, access, and reason discriminants, including
   zero NONE, upper reserved bits, width 0/1/2, signed widened offsets, and both
-  address-valid layouts. Preserve legacy physical xaddr on memory/nonmemory
+  address-valid layouts. Preserve physical xaddr on memory/nonmemory
   faults. Distinguish USER return-target/selection faults from KERNEL fetch faults
   of the instruction performing IRET/prepare, and UACCESS operand faults from
   KERNEL next-PC faults of that transfer.
 - Seed dirty lower/previous-frame metadata; generate each event and prove the new
   frame initializes independently. Nonmemory causes clear all eleven `$30–$3A`
-  words, while applicable legacy xaddr is retained. xpriv_class is nonzero only
+  words, while applicable physical xaddr is retained. xpriv_class is nonzero only
   for cause 7; xirq_source is meaningful only for cause 5; xtrap only for cause 6.
   Source 0 and service 0 must be distinguishable from non-IRQ/non-SWI events.
 - Exercise depths 1–8 and restoration: xframe_depth=1–8, xprior_depth=0–7, correct
@@ -3608,7 +3881,7 @@ to MOVU; toolchain and protected CPU suites exercise its decode/privilege orderi
 - Install vector 7 at kernel selector 0 offsets `$001C–$001F` and verify cause 7
   leaves vectors/causes 0–6 intact. From U, exercise every assigned privileged
   operation and alias, checking exact instruction-start PC/CS, canonical saved
-  I=1, physical legacy xaddr, correct operation class, and no ordinary effects.
+  I=1, physical physical xaddr, correct operation class, and no ordinary effects.
   Cover classes 1–10, including MOVU user access. A missing
   operand or reserved encoding must win over privilege, with class zero.
 - Check control/command data cannot select the privilege class: SETC command
@@ -3621,7 +3894,7 @@ to MOVU; toolchain and protected CPU suites exercise its decode/privilege orderi
 | Saved map read | `1F 82 20`, top xprocess_map=7 | r2=7; frame and flags unchanged |
 | Saved selector edit | `1F 97 22`, r7=`$1234` in K/E=1 | Store entire `$1234`; later IRET rejects noncanonical high byte |
 | Provenance write | `1F 90 23`, in either mode/depth | Illegal Instruction before privilege/E checks |
-| No legacy alias | `1F 80 14` | Illegal Instruction; legacy GETX xtrap remains `1F 34 00` |
+| No base-form alias | `1F 80 14` | Illegal Instruction; base GETX xtrap remains `1F 34 00` |
 | Reserved second byte | `1F 88` at `$FFFE` | Illegal Instruction without fetching a selector across the segment |
 | Missing extended index | `1F 80` with index unavailable in U | USER/FETCH Memory Access, xpriv_class=0 |
 | Legal U GETX | `1F 80 29`, no active frame before execution | Cause 7, CONTEXT_READ=5; xpc identifies this GETX |
@@ -3642,10 +3915,11 @@ to MOVU; toolchain and protected CPU suites exercise its decode/privilege orderi
 
 #### Conformance: Explicit user-access transfers
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 The assigned [MOVU forms](ISA.md#user-access-encoding) and
 [copy/recovery ABI example](ISA.md#user-buffer-copy-and-recovery-abi) require the
-following checks. These are specification requirements, not current execution
-coverage; the production modes still reject `$27` at the primary byte.
+following checks. A legal U MOVU raises Privilege only after complete fetch/decode.
 
 - Enumerate all 256 second bytes: exactly 64 select MOVU forms and 192 reject
   before a base fetch. For each legal mode, accept bases 0–3 and reject the 252
@@ -3680,8 +3954,7 @@ coverage; the production modes still reject `$27` at the primary byte.
   an unpublishable MMIO descriptor with U grants merely to test a later check.
 - Check final byte `$FFFF`, last word `$FFFE`, rejected crossing word `$FFFF`,
   negative/too-large starts, and short/long code-segment endpoints. No register,
-  flag, pointer, or store byte commits on fetch/operand/next-PC failure. In legacy
-  modes `$27` remains illegal without fetching a descriptor.
+  flag, pointer, or store byte commits on fetch/operand/next-PC failure.
 - Run the published copy example at CS=2/PC=`$1000`; verify copy_byte=`$1022`,
   copied=`$103D`, bad_user_buffer=`$104F`, and registry entries generated from
   exact emitted layout. Counts 0/1/255 succeed as appropriate; 256 rejects before
@@ -3725,9 +3998,11 @@ coverage; the production modes still reject `$27` at the primary byte.
 
 #### Conformance: PIC, timer and replay
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 These checks cover the assigned [minimal-v1 machine profile](ISA.md#minimum-machine-mmio-profile)
 and [host/replay contract](ISA.md#deterministic-host-events-and-replay). They are
-acceptance requirements for the implemented Phase 3 machine.
+acceptance requirements for working mode with minimal-v1.
 Install valid K vectors/entry and pinned recovery code to distinguish a device
 fault from a subsequent failed exception entry.
 
@@ -3803,7 +4078,9 @@ fault from a subsequent failed exception entry.
   at each transition and accepted batch, including faults and idle wakeup.
 - Assemble the published timer setup/ACK example with existing MOV encodings;
   after HALT advance to 256, enter vector 5/source 0, ACK, and IRET to after_idle
-  with DS restored. This execution test requires the future device implementation.
+  with DS restored. This is a required end-to-end working/minimal-v1 scenario;
+  the [status record](#implementation-status-and-remaining-work) identifies the
+  related tests and the exact printed sequence's evidence limit.
 
 Here M denotes `$FFFFFFFFFFFFFFFF`. Each vector assumes an initially clear
 source-0 pending bit and status unless explicitly stated.
@@ -3819,16 +4096,62 @@ source-0 pending bit and status unless explicitly stated.
 | ACK bit 0 while another timer edge becomes due on its retirement | In-service 0 cleared; pending 0 retained/set for next arbitration |
 | Halted T=20, I=1, enable0=1, not in-service, D=30 | idle target 31 fails BAD_TIME=6 unchanged; target 30 succeeds and next step takes IRQ |
 
+#### Conformance: Console profile and blocking I/O
+
+**Applicability:** `working` / `console-v1`, K device access and U processes;
+explicit minimal-v1 compatibility comparisons retain that profile's rejection
+and replay rules.
+
+- Preserve minimal-v1 reserved offsets, version-1 headers, source-2 external levels
+  and default constructor behavior; console-v1 uses an explicit version-2 header.
+- Validate aligned word register directions, byte values, empty reads, RX/TX bounds,
+  level deassertion, sticky pending and failed-result-PC transaction rollback.
+- Validate binary hex input, exact JSON shape, error priority, atomic batch rejection,
+  reset disposal, old-run rejection and exact RAM/backing digest binding.
+- Execute A's empty read, B's progress, recorded RX completion without changing B's
+  return image, subsequent timer selection and A's correct result/output/preserved state.
+- Exercise early/partial/32/excess input, timer/RX arbitration, invalid pointers,
+  segment-end partial transfers and exact nested copy faults, including depth 3.
+- Wake an all-blocked idle kernel through recorded input/idle advance and cover input
+  in the EI/HALT window. Nested K handlers must retain the outer U frame.
+- Cancel with pending or late input, drain request/PCB leases before map reuse,
+  reject the stale generation and prove neither backing receives a stale write.
+- Reject a corrupted candidate before replacement and retain the independently
+  saved current return image. Compare complete retained state at every boundary
+  and all final loader RAM for every scenario.
+
+#### Conformance: Compiler software baseline
+
+**Applicability:** `working` / `console-v1`; U corpus with pinned private code/data/
+stack maps and a pure K helper under the same calling convention. The language subset does not add instruction encodings or machine profiles.
+
+- Compile the published subset through the production assembler; reject unsupported
+  syntax, address-space conversion, object/frame limits and invalid type usage.
+- Execute expected byte/word array, struct-array, variable-stride, pointer math,
+  local-aggregate, nested-call and register-pressure outcomes; preserve B1 and
+  balanced successful stack frames in U and K.
+- Verify signed-byte/word comparison, short-circuit side effects and constant casts;
+  record saved CSR flags and exercise source branches that observe them.
+- Check segment endpoints, negative/out-of-range indexing, scaling/index overflow,
+  carry/borrow and pointer difference range/alignment. Guard termination must
+  precede target access and preserve data/isolation canaries.
+- Execute generated console read/line processing/output alongside B, record the
+  exact per-binary input boundary and survive timer preemption, including DS=SS.
+- Compare all retained state at every boundary and final loader RAM on replay;
+  publish static/dynamic work, spills, address checks, stack use and encoding
+  distributions with source/binary/artifact hashes. Keep symbolic savings separate
+  from executed results and report every matched-reference regression.
+
 #### Conformance: Far calls and returns
 
-The [CALLF/RETF contract](ISA.md#far-call-and-return-contract) is assigned and
-implemented for the RAM-based working subset. Legacy modes reject `$54/$55`
-before operand fetch. Protected-mode permission/MMIO cases are covered by the additional protected suite;
-this checklist continues to define the full acceptance scope.
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
+The [CALLF/RETF contract](ISA.md#far-call-and-return-contract) applies to
+working mode, including protected U/K RAM stack and target checks.
 
 - Check exact bytes `CALLF $010200 = 54 00 02 01 00`, `RETF = 55` and unchanged
   near CALL/RET/JL bytes. Cover target 0/$FFFF/$010000/$FFFFFF, flat-label sizing,
-  all truncated lengths, default legacy rejection, disassembly round trips,
+  all truncated lengths, disassembly round trips,
   unsupported suffixes, extra/missing operands, indirect/register forms, negative
   or oversized targets. Nonzero packed high bytes are post-fetch Invalid State,
   not early Illegal Instruction; a missing operand still wins before that check.
@@ -3877,17 +4200,17 @@ this checklist continues to define the full acceptance scope.
 
 #### Conformance: TST and TSTI
 
-The [assigned forms](ISA.md#tst-tsti--test-a-register-without-writing-it)
-and [review](ISA_EXAMPLES.md#test-instruction-review-and-measurements) have implemented subset coverage in explicit
-`working` mode. TST.W is an OR-self alias in all modes; the twelve new `$1A`
-tags require working mode and are rejected in legacy modes before immediate
-fetch. Protected U/K execution is enabled in working mode.
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
+The [assigned forms](ISA.md#tst-tsti--test-a-register-without-writing-it) and
+[review](ISA_EXAMPLES.md#current-workload-measurements) define
+register-preserving tests. TST.W is an OR-self alias. All twelve `$1A` tags execute in U/K.
 
 - Cover all twelve tags `$40–$4B`, r0–r3, both immediate widths, unary/default
   word aliases, canonical disassembly, negative literal aliases and endpoints.
   Reject other banks, memory, suffixes, arities, out-of-range literals and
-  adjacent reserved tags. Schema/runtime gating must agree between Python and
-  generated C++ tables; legacy instruction bytes and runtime behavior remain.
+  adjacent reserved tags. Metadata/decoder validation must agree between Python and
+  generated C++ tables; assigned instruction bytes remain unchanged.
 - Verify every unary input word, all byte value/mask pairs, word boundary and
   zero/all-ones/sign-only masks, all incoming NZCV/I states, and active-frame E.
   All sixteen register bits remain unchanged; N/Z use the temporary's selected
@@ -3899,7 +4222,7 @@ fetch. Protected U/K execution is enabled in working mode.
 - Missing instruction/operand bytes and an unrepresentable following PC must
   leave registers and saved flags unchanged before ordinary exception entry.
   Cover every truncation of every new tag, final valid next PC `$FFFF`, the
-  entire second-byte map, and legacy early rejection before operand reads.
+  entire second-byte map, and reserved-byte early rejection before operand reads.
 - Check the measured one-sample RX/TX sequences and a read-to-consume model
   returning `$03` then `$00`; two tests of the snapshot preserve both flags,
   while a second device read consumes a different sample. This is a symbolic
@@ -3907,8 +4230,11 @@ fetch. Protected U/K execution is enabled in working mode.
 
 #### Conformance: Immediate ALU
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 The assigned [immediate ALU forms](ISA.md#immediate-alu-instructions)
-require these implementation checks; this list specifies requirements, not current implementation coverage:
+require the following checks .  Execution evidence is listed in the
+[status record](#implementation-status-and-remaining-work):
 
 - Cover all 48 primary opcodes $80–$AF, all four B0 destinations and both widths,
   in U/K modes. Reject B1/internal destinations, unsupported suffixes and operand
@@ -3947,9 +4273,11 @@ retains the stated input C/V. Higher original register bytes deliberately differ
 
 #### Conformance: Immediate-count shifts and rotates
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 The [assigned operations](ISA.md#immediate-count-shifts-and-rotates) use forty
-tags `$1A $60–$87`, three bytes each, in working mode. These have real RAM-based
-emulator/tool coverage alongside the implemented protected execution and time/PIC machinery. The vectors below are now implementation requirements and tests.
+tags `$1A $60–$87`, three bytes each, in working U/K execution.  These vectors define required behavior;
+see the [status record](#implementation-status-and-remaining-work) for executed evidence.
 
 - Cover SHLI, SHRI, SARI, ROLI, and RORI at byte/word widths, all four B0
   destinations, and every count 0–16. Compare against an exact repeated-one-bit
@@ -3966,14 +4294,12 @@ emulator/tool coverage alongside the implemented protected execution and time/PI
   unsupported suffixes, and missing/non-immediate count operands. Every encoded
   count 17–255 raises Invalid State after full fetch, before resulting-PC checks;
   check all 9,560 invalid streams. Cover all truncated positions,
-  final-PC failures, compatibility modes, and precise unchanged state on fault.
+  final-PC failures, and precise unchanged state on fault.
 - One immediate-count operation retires once and has one atomic commit; internal
   bit steps do not permit IRQ entry or expose intermediate values. Preserve all
   existing two-byte, single-bit word shift encodings and their flags.
 - Cover all 680 legal tag/count streams with exact bytes and source/disassembly
-  round trips. Unsuffixed operations use word width. Schema/runtime gating must
-  preserve legacy 0.4/0.5 rejection at the secondary byte before count fetch;
-  reserved neighbors `$5F`/`$88` are illegal before operand fetch in all modes.
+  round trips. Unsuffixed operations use word width. Reserved neighbors `$5F`/`$88` are illegal before operand fetch .
 - Test count zero and count sixteen at PC=$FFFD: a valid count gives Memory
   Access without writes, while raw count seventeen gives earlier Invalid State.
   At $FFFC, a valid three-byte instruction finishes at $FFFF; at $FFFE the count
@@ -4007,13 +4333,19 @@ V/I/E retain their input values in every row, including zero-count operations.
 ### Instruction and execution vectors
 
 Use these cases as the working specification’s conformance contract.
-[README.md](../README.md#validation) records implementation coverage separately.
+The [status record](#implementation-status-and-remaining-work) records executed
+coverage separately. These vectors default to working/minimal-v1.
 Unless a case specifies U mode, use K mode, valid kernel-entry state and a
 published kernel map with the required RAM rights. Observe saved frames and live
 state independently. Tests of nested faults must leave frame capacity and valid
-entry state available unless they deliberately test terminal failure.
+entry state available unless they deliberately test terminal failure. If a case
+invalidates the live K stack, its instruction failure is captured but retained-K-
+stack entry validation can become terminal; use U with valid independent K entry
+when isolating a recoverable user stack failure.
 
 #### Conformance: Arithmetic and flag cases
+
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
 
 In this table r0 is the destination and r1 the source. Exact encodings are ADD=`10 64`, ADC=`10 44`, SUB=`10 74`, SBC=`10 54`, and CMP=`1A 04`. Flags shown include only N/Z/C/V; all unrelated flags must be preserved.
 
@@ -4034,6 +4366,8 @@ Also check self-operands, C=0/C=1 carry chains, CMP preserving both inputs, and 
 
 #### Conformance: Addressing, encoding, and PC cases
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 Unless overridden, use K mode, CS=DS=SS=0, PC=$0100, valid kernel RAM mappings and entry state, and I=0. For raw fault checks, install a valid corresponding vector and observe the saved context; the ordinary instruction effects listed below must not occur before entry.
 
 | Case | Setup / bytes | Expected result |
@@ -4052,6 +4386,13 @@ Unless overridden, use K mode, CS=DS=SS=0, PC=$0100, valid kernel RAM mappings a
 | DP underflow | DP=0, disp16=$FFFF | Memory Access; address-valid bit clear |
 | Branch base | BNE at $1000, bytes `41 04 00`, Z=0 | PC=$1007 |
 | Untaken branch | Same bytes, Z=1 | PC=$1003 |
+| Working rel8 truth table | `$60+condition`, every disp8 and NZCV/I combination | Identical predicates; length two, flags/registers preserved, one tick on success |
+| Reserved rel8 condition | `$6F` at $FFFF | Illegal Instruction before displacement fetch,  |
+| Rel8 widened selected end | Taken BRA.S at $FFFE with -2; untaken BEQ.S at $FFFE with Z=0 | Taken target=$FFFE succeeds; untaken next=$10000 gives precise RESULT_PC fault |
+| Rel8 missing operand | `$6E` at $FFFF or unavailable byte 1 | Fetch Memory Access; no wrap or effects |
+| Rel8 discarded target | Untaken branch whose target backing is absent | Fallthrough succeeds; taken form faults at CONTROL_TARGET without a retirement tick |
+| Rel8 relaxation | Forward 127/128, backward -128/-129, cascading forward/backward branches, forced-short validated after convergence | Deterministic selected widths; forced-long never shrinks, out-of-range forced short rejects |
+| Absolute numeric relaxation | An earlier shrink makes a numeric auto branch out of range | Pin that branch long and restart; numeric targets never relocate, emitted ranges always rechecked |
 | Branch truth table | All conditions, all 16 flag patterns | Match ISA predicates exactly; flags unchanged |
 | Last-byte NOP | PC=$FFFF, byte `00` | Memory Access; saved PC=$FFFF |
 | Last-byte extension | PC=$FFFF, byte `15` | Fetch Memory Access, never wrap |
@@ -4059,7 +4400,7 @@ Unless overridden, use K mode, CS=DS=SS=0, PC=$0100, valid kernel RAM mappings a
 | Illegal before operand fetch | PC=$FFFE, bytes `15 40` | Illegal Instruction, not a fetch across the boundary |
 | Reserved primary | Byte `$FF` | Illegal Instruction |
 | Reserved transfer mode | Bytes `10 E0` | Illegal Instruction |
-| Reserved B1 selector bits | Bytes `15 80 04` | Illegal Instruction; B1 indirect forms are otherwise assigned |
+| Working short B1 displacement | Bytes `15 80 04`, valid DS:(old_r4+1) word | Load using signed +1 displacement; the signed displacement is part of byte 2 |
 | Reserved shift bits | Bytes `1A 14` | Illegal Instruction |
 | Reserved context register-byte bits | Bytes `1F 28 08` | Illegal Instruction, even when E=0 |
 | Far jump | `53 00 02 03 00` | CS=3, PC=$0200 |
@@ -4071,19 +4412,25 @@ Unless overridden, use K mode, CS=DS=SS=0, PC=$0100, valid kernel RAM mappings a
 
 #### Conformance: B1 pointer transfer and adjustment cases
 
-Use independent CS and DS values so selecting the wrong segment cannot accidentally pass. Pointer offsets remain unsigned 16-bit values; memory displacements are signed 16-bit, while ADDP constants are signed eight-bit.
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
+Use independent CS and DS values so selecting the wrong segment cannot accidentally pass. Pointer offsets remain unsigned 16-bit values; memory displacements are signed six-bit or signed 16-bit, while ADDP constants are signed eight-bit.
 
 | Case | Setup / operation | Expected result |
 |---|---|---|
 | Independent data pointer | DS=3, r4=$2000; `15 80 00` | Load a word from physical $032000 into r0; DP unchanged |
 | Explicit code pointer | CS=2, r6=$2000; `15 AA 02` | Load a byte from physical $022000 into r2; PC advances normally |
-| Pointer displacement | `MOV.W r1,[ds:r5+2]` / `15 D1 01 02 00` | Store a word at DS:(old_r5+2); r5 unchanged |
-| Negative displacement | `MOV.W [cs:r6-2],r2` / `15 B2 02 FE FF` | Subtract two from the base for this access only |
+| Pointer displacement | `MOV.W r1,[ds:r5+2]` / `15 C1 09` | Store a word at DS:(old_r5+2); r5 unchanged |
+| Negative displacement | `MOV.W [cs:r6-2],r2` / `15 A2 FA` | Subtract two from the base for this access only |
 | Default segment and zero displacement | Assemble `[r4]` or `[r4+0]` | Select DS and emit the three-byte form |
 | Base and destination alias | `MOV.W [ds:r4],r4` | Address uses old r4; successful load replaces r4 |
 | Base and store source alias | `MOV.W r4,[ds:r4]` | Store the original r4 value at its original offset |
 | Segment-boundary word | Base=$FFFF, word access | Memory Access; no partial transfer or wrap |
 | Displaced underflow/overflow | Base=0 with -1, or base=$FFFF with +1 | Memory Access; base/value registers unchanged |
+| Compact endpoints and fallback | Working -32/31 vs -33/32 across all bases/value aliases, segments, widths and directions | Short descriptor uses signed high six bits; fallback remains five bytes, with identical transfer semantics |
+| Raw long short-range displacement | Valid five-byte zero/-32/31 | Execute as long; disassembly reassembles to three bytes  |
+| MOVU remains independent | Working `27 40 04` with absent displacement | Illegal Instruction before displacement fetch |
+| Short fetch and selected end | Missing byte 0/1/2; full store at $FFFD; last valid at $FFFC | Fetch fault for missing bytes; RESULT_PC at $FFFD with no effects; success ends at $FFFF |
 | Reserved descriptor before displacement | At PC=$FFFD, `15 90 04` | Illegal Instruction without fetching a displacement across the boundary |
 | Positive byte stride | r4=$1000; `ADDP #1,r4` / `20 01` | r4=$1001; every flag unchanged |
 | Positive word stride | r7=$1000; `ADDP #2,r7` / `23 02` | r7=$1002; every flag unchanged |
@@ -4098,8 +4445,8 @@ Use independent CS and DS values so selecting the wrong segment cannot accidenta
 | Restricted destinations | Assemble ADDP targeting r0–r3, SP, SB, ST, CS, DS, SS, or CSR | Reject; only r4–r7 and DP are allowed |
 | Strict signed constant | Assemble ADDP #128, #-129, or #$FF | Reject; use #-1 explicitly for a negative unit step |
 | Aliases | INCP r4 / DECP r7 / INCP dp / DECP dp | Emit `20 01` / `23 FF` / `24 01` / `24 FF`; preserve flags |
-| Old escaped ADDP forms | `1A 40` through `1A 43` | Illegal Instruction immediately; no constant fetch |
-| Unassigned neighboring primary | `$28` | Illegal Instruction; $25 is ADJSP, $26 is SWI, and $27 is MOVU, not additional ADDP destinations |
+| TST.B tags  | `1A 40` through `1A 43`, r0–r3 with nonzero upper bytes | Two-byte TST.B; preserve all register bits/C/V/I/E, set byte N/Z, and fetch no immediate |
+| Unassigned neighboring primary (working mode) | `$29` | Illegal Instruction; $25 is ADJSP, $26 is SWI, $27 is MOVU and $28 is compact SP MOV, not additional ADDP destinations |
 | Final representable next | ADDP at $FFFD with a valid sum | Success; PC=$FFFF and destination updated |
 | Final-PC overflow | ADDP at $FFFE with a valid sum | Memory Access; destination unchanged before entry |
 | Flags between arithmetic | CMP, then ADDP, then a branch; ADD, then ADDP, then ADC | Branch sees CMP flags; ADC consumes ADD's carry |
@@ -4108,6 +4455,8 @@ For every failed instruction, check its original PC and registers in the saved c
 
 #### Conformance: Stack and call cases
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 Use SS=2, SB=$1000, SP=$1000, ST=$1004, with words $1234 at SS:$1000 and $5678 at SS:$1002 unless stated otherwise.
 
 | Case | Operation / setup | Expected result |
@@ -4115,6 +4464,16 @@ Use SS=2, SB=$1000, SP=$1000, ST=$1004, with words $1234 at SS:$1000 and $5678 a
 | Slot zero | `MOV.W [sp+0],r0` | r0=$1234; SP unchanged |
 | Positive slot | `MOV.W [sp+2],r0` | r0=$5678; SP unchanged |
 | Entire slot must fit | Word at `[sp+3]` or `[sp+4]` | Stack Boundary; no load/store effects |
+| Compact SP exact forms | Working `$28 0d11zrrr off8`, all 8 GPRs, directions and widths | Three bytes; unchanged SS, SP/bounds, flags and non-destination registers |
+| Unsigned compact endpoint | Valid allocated byte/word at `[sp+255]` | +255, never -1; byte succeeds when it fits, word requires both bytes |
+| Long fallback | `[sp+256]` or `[sp+65535]` | Existing four-byte off16; never truncate to off8 |
+| Raw long small offset | `$15` SP off16 with 0..255 | Legal/noncanonical; disassembly reassembles compact |
+| Reserved compact secondary | Working `28 00`, offset absent | Illegal Instruction at byte 1 before fetching offset |
+| Full fetch priority | Missing valid compact/long byte plus invalid stack | Fetch Memory Access before stack/operand checks |
+| Compact selected-PC boundary | Valid operation at $FFFC/$FFFD | Next=$FFFF succeeds / next=$10000 faults without load/store effects |
+| Stack/operand before selected PC | Invalid stack slot or SS access at $FFFD | Earlier Stack/Memory operand fault wins; no partial effects |
+| Independent U recovery | U invalid live SB/SP/ST or SS rights/bounds/backing | Precise captured original state on K stack; no ordinary effects |
+| SS RAM/device mismatch | SP addresses the MMIO window via wrong backing or DEVICE descriptor | Reject without callback; if invalid K SS prevents entry, retain original operand fault in terminal state |
 | No negative slot | Assemble `[sp-2]` | Reject |
 | Encoded large positive offset | `[sp+$FFFF]` | Stack Boundary; never interpret as -1 or wrap below SP |
 | Empty-stack slot | SP=ST; load `[sp+0]` | Stack Boundary |
@@ -4144,6 +4503,8 @@ Also cover ST=$FFFF excluding stack byte $FFFF, odd stack boundaries, byte slot 
 
 #### Conformance: Register-target JS cases
 
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
 - `JS r4` through `JS r7` encode as `1F 60` through `1F 63`. Use CS=2, DS=3, and distinguish their memory contents. Only PC changes to the original selected register's offset; CS, SP, other registers, and every flag remain unchanged.
 - Load a table entry with `MOV.W [cs:r4],r5`, then JS r5. There is no extra target-word read, stack push, or return address; the worked dispatch example must skip its $DEAD fallthrough and produce $BEEF.
 - An unavailable first byte at CS:target causes Memory Access before effects and reports that physical target address.
@@ -4152,6 +4513,8 @@ Also cover ST=$FFFF excluding stack byte $FFFF, odd stack boundaries, byte slot 
 - JS r0, JS dp, JS [r4], and indirect CALL are rejected by the assembler. `$1F $64` remains illegal rather than implying an indirect call.
 
 #### Conformance: Exception, interrupt, and reset cases
+
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
 
 - Install vector 0 as `00 01 00 00`. Reset produces CS:PC=0:$0100, zero general registers/DP/DS/SS/CSR, SB=0, SP=ST=$FFFE, no pending IRQ, and inactive context. RAM is preserved.
 - Fault on PUSH with SB=SP=ST=0. For U entry, a valid protected kernel stack allows capture despite the invalid user stack. Vector 3 is read at kernel virtual $00000C. For K entry, an invalid retained kernel stack causes terminal entry failure after capture. The captured frame contains the original registers and faulting PC; successful U→K entry has live E=1 and I=0.
@@ -4166,6 +4529,8 @@ Also cover ST=$FFFF excluding stack byte $FFFF, odd stack boundaries, byte slot 
 - Host reset exits HALT and terminal state, discards pending IRQ/context, and reloads vector 0. An invalid reset vector or unavailable reset target gives terminal Reset Fault with no active frame and CS:PC=0:0.
 
 #### Conformance: Instruction-boundary recovery cases
+
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
 
 These sequences test actual instruction boundaries, not an artificial transaction spanning a prologue. Install valid vectors and mapped handler code. For a fault, observe the saved context after entry, distinguishing its pre-entry flags from live E=1/I=0.
 
@@ -4185,7 +4550,10 @@ Failed IRET must not silently clear E/reserved bits or overwrite the rejected fr
 
 #### Conformance: Software-trap and system-call cases
 
-These are the required software-trap cases:
+**Applicability:** `working` / `minimal-v1`, K unless U is specified.
+
+These are the required software-trap cases for working/minimal-v1, including
+U/K nesting.
 
 | Case | Required behavior |
 |---|---|
@@ -4196,7 +4564,7 @@ These are the required software-trap cases:
 | Context metadata | xtrap at index $14 is read-only; GETX accepts all eight GPR destinations, rejects upper register-byte bits before checking active context, and faults Invalid State outside a handler. SETX `$54` remains illegal before a third-byte fetch. |
 | Ordinary preservation/results | Use distinct initial values in every register. Handler clobbers live registers; IRET restores them except explicit xr0/xr1 edits. Verify DP, segments, stack, caller flags and all unedited context words. |
 | Unsupported service | Handler returns OS error normally, preserving xpc and caller interrupt policy; hardware never rejects an otherwise valid immediate. |
-| Invalid caller stack | Entry succeeds without using/probing stack RAM; unrepaired IRET raises a nested Stack Boundary fault. Repair saved limits/SP and verify successful return. |
+| Invalid caller stack (working U) | With valid K entry, capture does not use/probe the invalid user stack; kernel stack preflight still occurs. Unrepaired IRET raises a nested Stack Boundary fault. Repair saved limits/SP and return to U. |
 | Fetch failure | Missing immediate yields cause 2, fault-start xpc and xtrap=0. At PC=$FFFF, no wrap to offset zero. |
 | Continuation boundary | SWI at $FFFD can save $FFFF; at $FFFE it faults cause 2 with xpc=$FFFE and no valid address. |
 | Uninstalled continuation | SWI entry succeeds when next is uninstalled; IRET then raises a nested Memory Access fault unless xpc/xcs were repaired to an executable installed target. |

@@ -1,0 +1,1781 @@
+{
+  "assumptions": [
+    "All candidate sizes, retirements and moves are modeled, not executed or assembled.",
+    "Fixed layout; retain all bounds, negative-index, integer/scale and access-width checks, failure stubs, temporaries, calls and stack ABI.",
+    "Optimistically assume scratch r4 and dead incoming/outgoing ALU flags; liveness/allocation may reduce savings.",
+    "Only successful programs contribute modeled savings; unchanged failures validate the existing compiler contract only.",
+    "Guard-retaining models need one extra scratch B0, retain the same result/error code and ALU flags, and may change scratch saved state; they are not instruction-atomic equivalence claims.",
+    "Removing the carry branch changes the fault ABI and intermediate IRQ/replay boundaries; no equivalent replay schedule is claimed.",
+    "For the current SWI #255/code 4 contract, the best compatible choice is the existing sequence: zero ISA saving. An ADDP.R inserted after the same carry precheck is redundant."
+  ],
+  "candidate": {
+    "assigned_bytes": false,
+    "decoder_cost": {
+      "operand_combinations": 16,
+      "three_byte_model": "one escape tag plus descriptor; 16 valid operand combinations and reserved-bit validation",
+      "two_byte_model": "16 tags in an existing escape; 0 new primaries/tables; no numeric slot selected"
+    },
+    "failure": "proposed Invalid State, instruction address; retain all pre-instruction state before entry",
+    "flags": "preserve every CSR bit",
+    "memory": "no segment, permissions, backing or MMIO probe",
+    "mnemonic": "ADDP.R ra,rp (study notation only; assembler rejects)",
+    "operands": "ra=r0-r3 unsigned 16-bit; rp=r4-r7; DP excluded",
+    "result": "widen unsigned(rp)+unsigned(ra); commit iff <=65535; no underflow possible"
+  },
+  "current_execution_verified": true,
+  "decision": "defer",
+  "execution_checks": 1127311,
+  "programs": [
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 8,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 8,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 6,
+        "boundaries": 10181,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 32,
+        "reloads": 25,
+        "retired_instructions": 194,
+        "spills": 25,
+        "static_bytes": 206,
+        "system_retired_instructions": 10181
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 0,
+          "saved_bytes": 2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 4,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "saved_bytes": 1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 4,
+          "saved_spills": 0
+        }
+      },
+      "name": "array_byte",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            338,
+            340,
+            342
+          ],
+          "baseline_region_retired": 12,
+          "executions": 4,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 338
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 10,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 10,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 6,
+        "boundaries": 10229,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 18,
+        "reloads": 31,
+        "retired_instructions": 242,
+        "spills": 31,
+        "static_bytes": 211,
+        "system_retired_instructions": 10229
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 5,
+          "saved_bytes": 0,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 5,
+          "saved_bytes": -1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        }
+      },
+      "name": "array_word",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            353,
+            355,
+            362
+          ],
+          "baseline_region_retired": 15,
+          "executions": 5,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": -1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 353
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 0,
+        "boundaries": 10021,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 4,
+        "reloads": 0,
+        "retired_instructions": 34,
+        "spills": 0,
+        "static_bytes": 41,
+        "system_retired_instructions": 10021
+      },
+      "models": {},
+      "name": "array_word_hand",
+      "sites": [],
+      "variant": "hand"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 12,
+          "added_retired_instructions": 16,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 16,
+          "added_retired_instructions": 16,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 9,
+        "boundaries": 10246,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 18,
+        "reloads": 29,
+        "retired_instructions": 259,
+        "spills": 29,
+        "static_bytes": 384,
+        "system_retired_instructions": 10246
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 8,
+          "saved_bytes": 2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 8,
+          "saved_bytes": -2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        }
+      },
+      "name": "struct_array",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            356,
+            358,
+            367
+          ],
+          "baseline_region_retired": 9,
+          "executions": 3,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 356
+        },
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            405,
+            407,
+            416
+          ],
+          "baseline_region_retired": 9,
+          "executions": 3,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 405
+        },
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            497,
+            499,
+            506
+          ],
+          "baseline_region_retired": 3,
+          "executions": 1,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": -1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 497
+        },
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            542,
+            544,
+            551
+          ],
+          "baseline_region_retired": 3,
+          "executions": 1,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": -1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 542
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 0,
+        "boundaries": 10021,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 4,
+        "reloads": 0,
+        "retired_instructions": 34,
+        "spills": 0,
+        "static_bytes": 62,
+        "system_retired_instructions": 10021
+      },
+      "models": {},
+      "name": "struct_array_hand",
+      "sites": [],
+      "variant": "hand"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 5,
+        "boundaries": 10048,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 28,
+        "reloads": 1,
+        "retired_instructions": 61,
+        "spills": 1,
+        "static_bytes": 159,
+        "system_retired_instructions": 10048
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "local_struct",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 8,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 8,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 6,
+        "boundaries": 10307,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 38,
+        "reloads": 33,
+        "retired_instructions": 320,
+        "spills": 33,
+        "static_bytes": 262,
+        "system_retired_instructions": 10307
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 0,
+          "saved_bytes": 2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 4,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "saved_bytes": 1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 4,
+          "saved_spills": 0
+        }
+      },
+      "name": "variable_stride",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            377,
+            379,
+            381
+          ],
+          "baseline_region_retired": 12,
+          "executions": 4,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 377
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 1,
+          "added_bytes": 5,
+          "added_retired_instructions": 3,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 1,
+          "added_bytes": 6,
+          "added_retired_instructions": 3,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 3,
+        "boundaries": 10089,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 18,
+        "reloads": 9,
+        "retired_instructions": 102,
+        "spills": 9,
+        "static_bytes": 334,
+        "system_retired_instructions": 10089
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 2,
+          "saved_bytes": -1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": -1,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 2,
+          "saved_bytes": -2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": -1,
+          "saved_spills": 0
+        }
+      },
+      "name": "pointer_math",
+      "sites": [
+        {
+          "baseline_bank_moves": 0,
+          "baseline_bytes": 5,
+          "baseline_instructions": 2,
+          "baseline_pcs": [
+            313,
+            315
+          ],
+          "baseline_region_retired": 2,
+          "executions": 1,
+          "kind": "b0_result",
+          "models": {
+            "2": {
+              "added_bank_moves": 2,
+              "saved_bytes": -1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": -1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 2,
+              "saved_bytes": -2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": -1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 313
+        },
+        {
+          "baseline_pcs": [
+            367,
+            369
+          ],
+          "baseline_region_retired": 2,
+          "executions": 1,
+          "kind": "not_supported",
+          "operation": "subtract",
+          "pc": 367
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 4,
+        "boundaries": 10034,
+        "exit_csr": 36,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 14,
+        "reloads": 4,
+        "retired_instructions": 47,
+        "spills": 4,
+        "static_bytes": 130,
+        "system_retired_instructions": 10034
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "byte_boundary",
+      "sites": [
+        {
+          "baseline_pcs": [
+            317,
+            319
+          ],
+          "baseline_region_retired": 2,
+          "executions": 1,
+          "kind": "not_supported",
+          "operation": "subtract",
+          "pc": 317
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 3,
+        "boundaries": 10019,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 14,
+        "reloads": 1,
+        "retired_instructions": 32,
+        "spills": 1,
+        "static_bytes": 95,
+        "system_retired_instructions": 10019
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "word_boundary",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 4,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 9998,
+        "exit_csr": 37,
+        "guard_trap_pc": 373,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 14,
+        "reloads": 1,
+        "retired_instructions": 21,
+        "spills": 1,
+        "static_bytes": 120,
+        "system_retired_instructions": 9998
+      },
+      "models": {},
+      "name": "fail_add",
+      "sites": [
+        {
+          "baseline_bank_moves": 0,
+          "baseline_bytes": 4,
+          "baseline_instructions": 2,
+          "baseline_pcs": [
+            303,
+            305
+          ],
+          "baseline_region_retired": 2,
+          "executions": 1,
+          "kind": "b0_result",
+          "models": {
+            "2": {
+              "added_bank_moves": 2,
+              "saved_bytes": -2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": -1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 2,
+              "saved_bytes": -3,
+              "saved_reloads": 0,
+              "saved_retired_instructions": -1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 303
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 4,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 9998,
+        "exit_csr": 34,
+        "guard_trap_pc": 374,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 14,
+        "reloads": 1,
+        "retired_instructions": 21,
+        "spills": 1,
+        "static_bytes": 121,
+        "system_retired_instructions": 9998
+      },
+      "models": {},
+      "name": "fail_sub",
+      "sites": [
+        {
+          "baseline_pcs": [
+            303,
+            305
+          ],
+          "baseline_region_retired": 2,
+          "executions": 1,
+          "kind": "not_supported",
+          "operation": "subtract",
+          "pc": 303
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 3,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 9996,
+        "exit_csr": 44,
+        "guard_trap_pc": 369,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 14,
+        "reloads": 1,
+        "retired_instructions": 19,
+        "spills": 1,
+        "static_bytes": 138,
+        "system_retired_instructions": 9996
+      },
+      "models": {},
+      "name": "fail_scale",
+      "sites": [
+        {
+          "baseline_bank_moves": 0,
+          "baseline_bytes": 4,
+          "baseline_instructions": 2,
+          "baseline_pcs": [
+            307,
+            309
+          ],
+          "baseline_region_retired": 0,
+          "executions": 0,
+          "kind": "b0_result",
+          "models": {
+            "2": {
+              "added_bank_moves": 2,
+              "saved_bytes": -2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": -1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 2,
+              "saved_bytes": -3,
+              "saved_reloads": 0,
+              "saved_retired_instructions": -1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 307
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 2,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 10002,
+        "exit_csr": 34,
+        "guard_trap_pc": 364,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 16,
+        "reloads": 1,
+        "retired_instructions": 25,
+        "spills": 2,
+        "static_bytes": 133,
+        "system_retired_instructions": 10002
+      },
+      "models": {},
+      "name": "fail_negative",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            323,
+            325,
+            327
+          ],
+          "baseline_region_retired": 0,
+          "executions": 0,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 323
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 1,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 9999,
+        "exit_csr": 37,
+        "guard_trap_pc": 353,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 16,
+        "reloads": 1,
+        "retired_instructions": 22,
+        "spills": 2,
+        "static_bytes": 111,
+        "system_retired_instructions": 9999
+      },
+      "models": {},
+      "name": "fail_bounds",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            312,
+            314,
+            316
+          ],
+          "baseline_region_retired": 0,
+          "executions": 0,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 312
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 5,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 9993,
+        "exit_csr": 36,
+        "guard_trap_pc": 327,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 12,
+        "reloads": 0,
+        "retired_instructions": 16,
+        "spills": 0,
+        "static_bytes": 74,
+        "system_retired_instructions": 9993
+      },
+      "models": {},
+      "name": "fail_width",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 3,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 10015,
+        "exit_csr": 44,
+        "guard_trap_pc": 386,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 22,
+        "reloads": 1,
+        "retired_instructions": 38,
+        "spills": 3,
+        "static_bytes": 144,
+        "system_retired_instructions": 10015
+      },
+      "models": {},
+      "name": "fail_index_overflow",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            345,
+            347,
+            349
+          ],
+          "baseline_region_retired": 0,
+          "executions": 0,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 345
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 5,
+        "boundaries": 10324,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 42,
+        "reloads": 37,
+        "retired_instructions": 337,
+        "spills": 37,
+        "static_bytes": 295,
+        "system_retired_instructions": 10324
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "pressure",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 10077,
+        "exit_csr": 36,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 14,
+        "reloads": 5,
+        "retired_instructions": 90,
+        "spills": 5,
+        "static_bytes": 358,
+        "system_retired_instructions": 10077
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "signed_bytes",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 10025,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 16,
+        "reloads": 2,
+        "retired_instructions": 38,
+        "spills": 2,
+        "static_bytes": 96,
+        "system_retired_instructions": 10025
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "shifts",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 192,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 192,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 193,
+        "boundaries": 22837,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 32,
+        "reloads": 673,
+        "retired_instructions": 6080,
+        "spills": 673,
+        "static_bytes": 253,
+        "system_retired_instructions": 22819
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 96,
+          "saved_bytes": 1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 96,
+          "saved_bytes": 0,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        }
+      },
+      "name": "preemption",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            298,
+            300,
+            309
+          ],
+          "baseline_region_retired": 288,
+          "executions": 96,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 298
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 14,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 14,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 9,
+        "boundaries": 16382,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 18,
+        "reloads": 78,
+        "retired_instructions": 692,
+        "spills": 78,
+        "static_bytes": 466,
+        "system_retired_instructions": 16376
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 0,
+          "saved_bytes": 3,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 7,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "saved_bytes": 2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 7,
+          "saved_spills": 0
+        }
+      },
+      "name": "terminal",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            400,
+            402,
+            405
+          ],
+          "baseline_region_retired": 21,
+          "executions": 7,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 3,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 400
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 0,
+        "boundaries": 14346,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 10,
+        "reloads": 0,
+        "retired_instructions": 149,
+        "spills": 0,
+        "static_bytes": 129,
+        "system_retired_instructions": 14344
+      },
+      "models": {},
+      "name": "terminal_hand",
+      "sites": [],
+      "variant": "hand"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 5,
+        "boundaries": 10060,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 22,
+        "maximum_user_stack_bytes": 10,
+        "reloads": 3,
+        "retired_instructions": 66,
+        "spills": 3,
+        "static_bytes": 174,
+        "system_retired_instructions": 10060
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "kernel_caller",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 6,
+          "added_retired_instructions": 8,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 8,
+          "added_retired_instructions": 8,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 5,
+        "boundaries": 10223,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 18,
+        "reloads": 17,
+        "retired_instructions": 236,
+        "spills": 17,
+        "static_bytes": 290,
+        "system_retired_instructions": 10223
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 4,
+          "saved_bytes": 1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 4,
+          "saved_bytes": -1,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 0,
+          "saved_spills": 0
+        }
+      },
+      "name": "packed_struct",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            369,
+            371,
+            380
+          ],
+          "baseline_region_retired": 6,
+          "executions": 2,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 369
+        },
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 6,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            429,
+            431,
+            438
+          ],
+          "baseline_region_retired": 6,
+          "executions": 2,
+          "kind": "b1_width_checked_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 1,
+              "saved_bytes": 0,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 1,
+              "saved_bytes": -1,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 0,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 429
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 6,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 6,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 6,
+        "boundaries": 10168,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 36,
+        "reloads": 19,
+        "retired_instructions": 181,
+        "spills": 19,
+        "static_bytes": 244,
+        "system_retired_instructions": 10168
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 0,
+          "saved_bytes": 3,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 3,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "saved_bytes": 2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 3,
+          "saved_spills": 0
+        }
+      },
+      "name": "local_array",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            338,
+            340,
+            343
+          ],
+          "baseline_region_retired": 9,
+          "executions": 3,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 3,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 338
+        }
+      ],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 6,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 10002,
+        "exit_csr": 38,
+        "guard_trap_pc": 359,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 16,
+        "reloads": 1,
+        "retired_instructions": 25,
+        "spills": 1,
+        "static_bytes": 106,
+        "system_retired_instructions": 10002
+      },
+      "models": {},
+      "name": "fail_difference",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 6,
+      "guarded_models": {},
+      "measured": {
+        "bank_moves": 1,
+        "boundaries": 10006,
+        "exit_csr": 32,
+        "guard_trap_pc": 368,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 16,
+        "reloads": 1,
+        "retired_instructions": 29,
+        "spills": 1,
+        "static_bytes": 115,
+        "system_retired_instructions": 10006
+      },
+      "models": {},
+      "name": "fail_alignment",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {},
+        "3": {}
+      },
+      "measured": {
+        "bank_moves": 3,
+        "boundaries": 10049,
+        "exit_csr": 32,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 22,
+        "reloads": 4,
+        "retired_instructions": 62,
+        "spills": 4,
+        "static_bytes": 151,
+        "system_retired_instructions": 10049
+      },
+      "models": {
+        "2": {},
+        "3": {}
+      },
+      "name": "constants",
+      "sites": [],
+      "variant": "compiled"
+    },
+    {
+      "expected_guard": 0,
+      "guarded_models": {
+        "2": {
+          "added_bank_moves": 0,
+          "added_bytes": 3,
+          "added_retired_instructions": 512,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "added_bytes": 4,
+          "added_retired_instructions": 512,
+          "saved_reloads": 0,
+          "saved_spills": 0
+        }
+      },
+      "measured": {
+        "bank_moves": 769,
+        "boundaries": 59990,
+        "exit_csr": 37,
+        "guard_trap_pc": 0,
+        "maximum_helper_stack_bytes": 0,
+        "maximum_user_stack_bytes": 34,
+        "reloads": 1793,
+        "retired_instructions": 16166,
+        "spills": 1793,
+        "static_bytes": 242,
+        "system_retired_instructions": 59900
+      },
+      "models": {
+        "2": {
+          "added_bank_moves": 0,
+          "saved_bytes": 3,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 256,
+          "saved_spills": 0
+        },
+        "3": {
+          "added_bank_moves": 0,
+          "saved_bytes": 2,
+          "saved_reloads": 0,
+          "saved_retired_instructions": 256,
+          "saved_spills": 0
+        }
+      },
+      "name": "preempt_stack",
+      "sites": [
+        {
+          "baseline_bank_moves": 1,
+          "baseline_bytes": 7,
+          "baseline_instructions": 3,
+          "baseline_pcs": [
+            289,
+            291,
+            294
+          ],
+          "baseline_region_retired": 768,
+          "executions": 256,
+          "kind": "b1_byte_access",
+          "models": {
+            "2": {
+              "added_bank_moves": 0,
+              "saved_bytes": 3,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            },
+            "3": {
+              "added_bank_moves": 0,
+              "saved_bytes": 2,
+              "saved_reloads": 0,
+              "saved_retired_instructions": 1,
+              "saved_spills": 0
+            }
+          },
+          "operation": "add",
+          "pc": 289
+        }
+      ],
+      "variant": "compiled"
+    }
+  ],
+  "provenance": {
+    "compiler": "SmallC 0.1.0",
+    "execution_sha256": "8dd41a4ca82716bf13b91902f48cd3ca687e079c8765867650790f518754181a",
+    "files": {
+      "doc/ISA_ENCODING.md": "9caaf7a4d4d49233405e0861f7151026508c49d38e04eff6005d7d7df22e3f2b",
+      "tests/compiler_conformance.cpp": "c88c9ae25556e6bda1a1e06229973503a64dd0fa277123bf91cfae34cc2be389",
+      "tests/test_pointer_evaluation.py": "0ace080aa889df2a19c9a2cf8213efe3d37afa1a0b7a66241bcf6b438bdd1afd",
+      "tools/evaluate_pointer_arithmetic.py": "4e3cb2f1b633ba713e97fce1db2e8aca16c0fd73776c88f08fef03f6ea668242",
+      "tools/smallc.py": "1a767b535eff9cfe18b46fee268c2ca3ba606565eb90f686415e0a166608432a"
+    },
+    "manifest_sha256": "11affb4f2424676ff748efca8f2e6aba0dc59b37f8a9b37263ca702b1f030416",
+    "mode": "working",
+    "profile": "console-v1"
+  },
+  "reconsider_when": [
+    "A register-allocation/pointer-residency prototype measures savings against an equally optimized safe existing-ISA baseline.",
+    "The guest language/kernel ABI explicitly chooses software pointer errors versus recoverable Invalid State, including saved-state/continuation rules.",
+    "Unsigned addition and separately measured signed/subtraction needs are reviewed without reinterpreting existing ADD/ADDP bytes.",
+    "If adopted later, complete numeric encoding review, tools/runtime integration and precise-fault/replay conformance."
+  ],
+  "resident_b1_baseline": {
+    "assembly": [
+      "MOV r4,r1",
+      "ADD r0,r1",
+      "BCS overflow",
+      "MOV r1,r4"
+    ],
+    "bank_moves": 2,
+    "bytes": 8,
+    "limitations": "Requires a pointer resident in B1, dead ALU flags, and explicit acceptance of the different fault/IRQ contract; not current compiler output.",
+    "modeled_candidate_bytes": [
+      2,
+      3
+    ],
+    "modeled_candidate_retired": 1,
+    "reloads": 0,
+    "retired_success": 4,
+    "spills": 0
+  },
+  "schema_version": 1,
+  "tables": {
+    "ext10": {
+      "assigned": 224,
+      "unassigned": 32
+    },
+    "ext15": {
+      "assigned": 240,
+      "unassigned": 16
+    },
+    "ext1a": {
+      "assigned": 80,
+      "unassigned": 176
+    },
+    "ext1f": {
+      "assigned": 93,
+      "unassigned": 163
+    },
+    "ext27": {
+      "assigned": 64,
+      "unassigned": 192
+    },
+    "ext28": {
+      "assigned": 32,
+      "unassigned": 224
+    },
+    "primary": {
+      "assigned": 111,
+      "unassigned": 145
+    }
+  },
+  "totals": {
+    "add_executions_all": 389,
+    "add_executions_successful": 388,
+    "add_sites_all": 19,
+    "add_sites_successful": 14,
+    "all_compiled_programs": 27,
+    "byte_only_models": {
+      "2": {
+        "added_bank_moves": 0,
+        "executions": 274,
+        "saved_bytes": 13,
+        "saved_reloads": 0,
+        "saved_retired_instructions": 274,
+        "saved_spills": 0,
+        "sites": 5
+      },
+      "3": {
+        "added_bank_moves": 0,
+        "executions": 274,
+        "saved_bytes": 8,
+        "saved_reloads": 0,
+        "saved_retired_instructions": 274,
+        "saved_spills": 0,
+        "sites": 5
+      }
+    },
+    "guarded_models": {
+      "2": {
+        "added_bank_moves": 1,
+        "added_bytes": 44,
+        "added_retired_instructions": 777,
+        "saved_reloads": 0,
+        "saved_spills": 0
+      },
+      "3": {
+        "added_bank_moves": 1,
+        "added_bytes": 58,
+        "added_retired_instructions": 777,
+        "saved_reloads": 0,
+        "saved_spills": 0
+      }
+    },
+    "models": {
+      "2": {
+        "added_bank_moves": 115,
+        "saved_bytes": 16,
+        "saved_reloads": 0,
+        "saved_retired_instructions": 273,
+        "saved_spills": 0
+      },
+      "3": {
+        "added_bank_moves": 115,
+        "saved_bytes": 2,
+        "saved_reloads": 0,
+        "saved_retired_instructions": 273,
+        "saved_spills": 0
+      }
+    },
+    "subtract_executions_all": 3,
+    "subtract_sites_all": 3,
+    "successful_bank_moves": 1039,
+    "successful_bytes": 4350,
+    "successful_programs": 18,
+    "successful_reloads": 2764,
+    "successful_retired": 25205,
+    "successful_spills": 2764
+  }
+}

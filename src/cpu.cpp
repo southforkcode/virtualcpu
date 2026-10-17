@@ -19,16 +19,11 @@ void stack(const Registers& s, int64_t start, int64_t end) {
 }
 uint16_t nz(uint16_t x) { return (x==0?Z:0) | (x&0x8000?N:0); }
 }
-VirtualCPU::VirtualCPU(Revision revision, size_t ram_bytes)
-    : revision_(revision), ram_(ram_bytes), installed_(ram_bytes,1) {
-    if (revision!=Revision::V04 && revision!=Revision::V05 && revision!=Revision::Working)
-        throw std::invalid_argument("Unsupported runtime mode");
+VirtualCPU::VirtualCPU(size_t ram_bytes, MachineProfile profile)
+    : profile_(profile), ram_(ram_bytes), installed_(ram_bytes,1), protected_(ProtectedState{}) {
+    if (profile!=MachineProfile::MinimalV1 && profile!=MachineProfile::ConsoleV1)
+        throw std::invalid_argument("Unsupported machine profile");
     if (ram_bytes>(1u<<24)) throw std::invalid_argument("RAM exceeds physical address space");
-    if (revision==Revision::Working) protected_.emplace();
-}
-void VirtualCPU::request_irq() {
-    if (protected_) throw std::logic_error("Working mode requires source-specific boundary events");
-    if (state_==ExecutionState::Running || state_==ExecutionState::Halted) pending_=true;
 }
 void VirtualCPU::map(uint32_t start, size_t length, bool installed) {
     if (start>ram_.size() || length>ram_.size()-start) throw std::out_of_range("RAM map");
@@ -44,78 +39,40 @@ uint8_t VirtualCPU::read(uint32_t a) const {
     return ram_[a];
 }
 uint32_t VirtualCPU::access(uint16_t segment, int64_t offset, unsigned width, Access type, Phase phase, bool mmio) const {
-    if (protected_) return translate(mode()==Mode::Kernel?0:protected_->controls[0],mode(),segment,offset,width,type,phase,mode()==Mode::Kernel?2:1,mmio);
-    auto a=address(segment,offset);
-    if (!a || offset+width>65536) throw Fault{Cause::Memory,a};
-    for (unsigned i=0;i<width;++i) read(*a+i);
-    return *a;
-}
-uint32_t VirtualCPU::vector(unsigned cause) const {
-    uint32_t packed=0;
-    for (unsigned i=0;i<4;++i) packed |= uint32_t(read(4*cause+i))<<(8*i);
-    if (packed&0xff000000) throw Fault{Cause::Invalid,4*cause};
-    read(packed);
-    return packed;
+    return translate(mode()==Mode::Kernel?0:protected_->controls[0],mode(),segment,offset,width,type,phase,mode()==Mode::Kernel?2:1,mmio);
 }
 void VirtualCPU::reset() {
-    regs_=Registers{}; context_.reset(); diagnostic_.reset(); pending_=false;
+    regs_=Registers{}; context_.reset(); diagnostic_.reset();
     state_=ExecutionState::Running;
-    if (protected_) {
-        if (has_reset_) increment(run_);
-        has_reset_=true; boundary_="0"; sequence_="0"; terminal_.reset();
-        protected_=ProtectedState{}; protected_->published.set(0);
-        for (unsigned s=0;s<256;++s) protected_->descriptors[uint16_t(s)]={uint16_t(s),uint16_t(s==255?0xc3:0x1c1),0,0,1,0,0};
-        try {
-            uint32_t packed=0;
-            for (unsigned i=0;i<4;++i) packed|=uint32_t(read(translate(0,Mode::Kernel,0,i,1,Access::Read,Phase::Operand,2)))<<(8*i);
-            if (packed&0xff000000) throw Fault{Cause::Invalid,0};
-            translate(0,Mode::Kernel,uint16_t(packed>>16),packed&65535,1,Access::Fetch,Phase::ControlTarget,2);
-            regs_.cs=uint16_t(packed>>16); regs_.pc=uint16_t(packed); return;
-        } catch (const Fault& f) { diagnostic_=f; state_=ExecutionState::TerminalResetFault; return; }
-    }
+    if (has_reset_) increment(run_);
+    has_reset_=true; boundary_="0"; sequence_="0"; terminal_.reset();
+    protected_=ProtectedState{}; protected_->published.set(0);
+    for (unsigned s=0;s<256;++s) protected_->descriptors[uint16_t(s)]={uint16_t(s),uint16_t(s==255?0xc3:0x1c1),0,0,1,0,0};
     try {
-        auto t=vector(0); regs_.cs=uint16_t(t>>16); regs_.pc=uint16_t(t);
-    } catch (Fault f) { diagnostic_=f; state_=ExecutionState::TerminalResetFault; }
-}
-void VirtualCPU::enter(Cause cause, uint16_t pc, std::optional<uint32_t> a, uint8_t service) {
-    if (protected_) { enter_protected(Fault{cause,a},pc,service,last_source_); return; }
-    Context x{};
-    std::copy(regs_.r.begin(),regs_.r.end(),x.begin());
-    x[8]=pc; x[9]=regs_.cs; x[10]=regs_.flags; x[11]=regs_.sp;
-    x[12]=regs_.sb; x[13]=regs_.st; x[14]=regs_.ss; x[15]=regs_.dp; x[16]=regs_.ds;
-    x[17]=uint16_t(cause); x[18]=a?uint16_t(*a):0;
-    x[19]=a?uint16_t(0x100|(*a>>16)):0; x[20]=service;
-    context_=x; regs_.flags &= ~I; state_=ExecutionState::Running;
-    try {
-        auto t=vector(unsigned(cause)); regs_.cs=uint16_t(t>>16); regs_.pc=uint16_t(t);
-        if (cause==Cause::IRQ) pending_=false;
-    } catch (Fault f) { diagnostic_=f; state_=ExecutionState::TerminalDoubleFault; }
+        uint32_t packed=0;
+        for (unsigned i=0;i<4;++i) packed|=uint32_t(read(translate(0,Mode::Kernel,0,i,1,Access::Read,Phase::Operand,2)))<<(8*i);
+        if (packed&0xff000000) throw Fault{Cause::Invalid,0};
+        translate(0,Mode::Kernel,uint16_t(packed>>16),packed&65535,1,Access::Fetch,Phase::ControlTarget,2);
+        regs_.cs=uint16_t(packed>>16); regs_.pc=uint16_t(packed);
+    } catch (const Fault& f) { diagnostic_=f; state_=ExecutionState::TerminalResetFault; }
 }
 void VirtualCPU::fault(Fault f) {
-    if (protected_) { enter_protected(f,regs_.pc); return; }
-    if (context_) { diagnostic_=f; state_=ExecutionState::TerminalDoubleFault; }
-    else enter(f.cause,regs_.pc,f.address);
+    enter_protected(f,regs_.pc);
 }
 bool VirtualCPU::step() {
     if (state_==ExecutionState::TerminalDoubleFault || state_==ExecutionState::TerminalResetFault) return false;
-    if (protected_) {
-        auto& p=*protected_; p.pending|=p.levels;
-        uint16_t eligible=p.pending&p.enable&uint16_t(~p.in_service);
-        if (eligible && (regs_.flags&32)) {
-            unsigned source=0; while (!(eligible&(1u<<source))) ++source;
-            enter_protected(Fault{Cause::IRQ,{}},regs_.pc,0,uint16_t(source)); increment(boundary_); return true;
-        }
-        if (state_==ExecutionState::Halted) return false;
-        try {
-            execute();
-            if (state_!=ExecutionState::TerminalDoubleFault) { if (p.time!=UINT64_MAX) ++p.time; timer_due(); }
-        } catch (const Fault& f) { fault(f); }
-        increment(boundary_); return true;
+    auto& p=*protected_; p.pending|=p.levels;
+    uint16_t eligible=p.pending&p.enable&uint16_t(~p.in_service);
+    if (eligible && (regs_.flags&32)) {
+        unsigned source=0; while (!(eligible&(1u<<source))) ++source;
+        enter_protected(Fault{Cause::IRQ,{}},regs_.pc,0,uint16_t(source)); increment(boundary_); return true;
     }
-    if (pending_ && (regs_.flags&I) && !context_) { enter(Cause::IRQ,regs_.pc); return true; }
     if (state_==ExecutionState::Halted) return false;
-    try { execute(); } catch (Fault f) { fault(f); }
-    return true;
+    try {
+        execute();
+        if (state_!=ExecutionState::TerminalDoubleFault) { if (p.time!=UINT64_MAX) ++p.time; timer_due(); }
+    } catch (const Fault& f) { fault(f); }
+    increment(boundary_); return true;
 }
 void VirtualCPU::execute() {
     const auto& old=regs_;
@@ -125,33 +82,27 @@ void VirtualCPU::execute() {
     auto illegal=[&] { throw Fault{Cause::Illegal,ia}; };
     auto check_stack=[&](int64_t start,int64_t end) {
         try { stack(old,start,end); }
-        catch (Fault f) { if (protected_) f.address=physical_hint(old.ss,start); throw f; }
+        catch (Fault f) { f.address=physical_hint(old.ss,start); throw f; }
     };
     std::array<uint8_t,5> b{};
     unsigned fetched=0;
     auto fetch=[&] {
-        if (protected_) {
-            auto a=access(old.cs,int64_t(old.pc)+fetched,1,Access::Fetch,Phase::Fetch);
-            b[fetched]=read(a);
-        } else {
-            if (unsigned(old.pc)+fetched>65535) throw Fault{Cause::Memory,{}};
-            b[fetched]=read((uint32_t(old.cs)<<16)|(unsigned(old.pc)+fetched));
-        }
+        auto a=access(old.cs,int64_t(old.pc)+fetched,1,Access::Fetch,Phase::Fetch);
+        b[fetched]=read(a);
         return b[fetched++];
     };
     // Fetch/decode never advances live PC. Reserved descriptors fail as read.
     auto op=fetch();
     auto e=encoding::tables[0][op];
-    unsigned runtime_level=revision_==Revision::Working?6:revision_==Revision::V05?5:4;
-    if (e.min_revision>runtime_level || (!e.length && !e.dispatch)) illegal();
+    if (!e.length && !e.dispatch) illegal();
     if (e.dispatch) e=encoding::tables[e.dispatch][fetch()];
-    if (!e.length || e.min_revision>runtime_level) illegal();
+    if (!e.length) illegal();
     while (fetched<e.length) {
         auto i=fetched; fetch();
         if ((b[i]&e.masks[i])!=e.expected[i]) illegal();
         if (!(encoding::valid_bytes[e.validation[i]][b[i]/8]&(1u<<(b[i]%8)))) illegal();
     }
-    if (protected_ && mode()==Mode::User) {
+    if (mode()==Mode::User) {
         unsigned privilege=0, x=b[1];
         if (op==1) privilege=3; if (op==2 || op==3) privilege=2; if (op==0x27) privilege=10;
         if (op==0x10 && (x&0xf0)==0x90) { if ((x&3)==3) privilege=1; if ((x&3)==1) privilege=4; }
@@ -165,7 +116,7 @@ void VirtualCPU::execute() {
         if (privilege) { Fault f{Cause::Privilege,ia}; f.privilege=uint16_t(privilege); throw f; }
     }
     uint32_t operand=0;
-    unsigned start=(op==0x15 || op==0x1f)?2:1;
+    unsigned start=(op==0x15 || op==0x28 || op==0x1f)?2:1;
     for (unsigned j=start;j<e.length;++j) operand |= uint32_t(b[j])<<(8*(j-start));
     int64_t next=unsigned(old.pc)+e.length, target=next;
     uint16_t target_segment=old.cs;
@@ -219,7 +170,7 @@ void VirtualCPU::execute() {
                 else { if (v&~0x6f) invalid(); s.flags=v&0x2f; }
             } else if (kind==5) {
                 if (dst<3 && v>255) invalid();
-                if (protected_ && mode()==Mode::User && (dst==0 || dst==2)) {
+                if (mode()==Mode::User && (dst==0 || dst==2)) {
                     select_segment(protected_->controls[0],Mode::User,v,dst==0,Phase::Operand);
                     if (dst==0) { auto d=descriptor(protected_->controls[0],v); s.sb=d[5]; s.st=d[6]; s.sp=d[6]; }
                 }
@@ -239,12 +190,10 @@ void VirtualCPU::execute() {
         if (value<old.sb || value>old.st) throw Fault{Cause::Stack,physical_hint(old.ss,value)};
         s.sp=uint16_t(value);
     } else if (op==0x26) {
-        if (context_ && !protected_) invalid();
         if (next>65535) {
-            if (protected_) throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
-            throw Fault{Cause::Memory,{}};
+            throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
         }
-        enter(Cause::Trap,uint16_t(next),{},b[1]); return;
+        enter_protected(Fault{Cause::Trap,{}},uint16_t(next),b[1]); return;
     } else if (op>=0x80 && op<=0xaf) {
         unsigned kind=(op-0x80)>>3,bits=(op&4)?16:8,mask=(1u<<bits)-1;
         uint32_t a=old.r[op&3]&mask,v=bits==8?b[1]:uint32_t(b[1])|(uint32_t(b[2])<<8),result=0;
@@ -263,25 +212,26 @@ void VirtualCPU::execute() {
         int64_t offset=old.r[4+(b[2]&3)]+((x&64)?signed16(b[3]|uint32_t(b[4])<<8):0);
         auto a=translate(protected_->controls[1],Mode::User,protected_->controls[2],offset,width,store?Access::Write:Access::Read,Phase::Operand,3);
         if (store) stage_store(a,old.r[reg],width); else s.r[reg]=width==1?ram_[a]:read_word(a);
-    } else if (op==0x15) {
+    } else if (op==0x15 || op==0x28) {
         unsigned x=b[1], reg=x&7, width=(x&8)?1:2, mode=(x>>4)&3;
         bool store=x&64;
         if (!(x&128) && mode==0) s.r[reg]=uint16_t(operand);
         else {
             int64_t offset; uint16_t segment=old.ds;
             if (x&128) {
-                offset=old.r[4+(b[2]&3)]+((x&16)?signed16(b[3]|uint32_t(b[4])<<8):0);
+                int displacement=(x&16)?signed16(b[3]|uint32_t(b[4])<<8):int(b[2]>>2)-(b[2]&128?64:0);
+                offset=int64_t(old.r[4+(b[2]&3)])+displacement;
                 if (x&32) segment=old.cs;
             } else if (mode==1) offset=operand;
             else if (mode==2) offset=old.dp+signed16(operand);
             else { offset=int64_t(old.sp)+operand; segment=old.ss; check_stack(offset,offset+width); }
             auto a=access(segment,offset,width,store?Access::Write:Access::Read,Phase::Operand,!(!(x&128) && mode==3));
-            if (protected_ && backing(a)==2) {
+            if (backing(a)==2) {
                 try {
                     if (width!=2 || (a&1)) throw Fault{Cause::Memory,a};
                     if (store) {
                         auto commit=stage_mmio(a,old.r[reg]); action=[this,commit]{commit();++protected_->device_commits;};
-                    } else { s.r[reg]=mmio_read(a); action=[this]{++protected_->device_commits;}; }
+                    } else { s.r[reg]=mmio_read(a); action=[this,a]{commit_mmio_read(a);++protected_->device_commits;}; }
                 } catch (const Fault& f) {
                     throw memory_failure(this->mode()==Mode::Kernel?0:protected_->controls[0],this->mode(),segment,offset,width,
                         store?Access::Write:Access::Read,Phase::Operand,this->mode()==Mode::Kernel?2:1,7,f.address);
@@ -321,10 +271,11 @@ void VirtualCPU::execute() {
             uint16_t value=kind==1?uint16_t(a<<1):kind==2?a>>1:(a>>1)|(a&0x8000);
             s.r[dst]=value; s.flags=(old.flags&~7)|nz(value)|((kind==1?a&0x8000:a&1)?C:0);
         }
-    } else if (op>=0x40 && op<=0x4e) {
+    } else if ((op>=0x40 && op<=0x4e) || (op>=0x60 && op<=0x6e)) {
         bool z=old.flags&Z,n=old.flags&N,c=old.flags&C,v=old.flags&V;
         std::array<bool,15> conditions{z,!z,c,!c,n,!n,v,!v,c&&!z,!c||z,n==v,n!=v,!z&&n==v,z||n!=v,true};
-        if (conditions[op-0x40]) jump(next+signed16(operand));
+        unsigned condition=op-(op>=0x60?0x60:0x40);
+        if (conditions[condition]) jump(next+(op>=0x60?signed8(b[1]):signed16(operand)));
     } else if (op==0x52) jump(operand);
     else if (op==0x53) {
         if (operand&0xff000000) invalid();
@@ -338,8 +289,7 @@ void VirtualCPU::execute() {
         access(old.ss,offset+2,2,calling?Access::Write:Access::Read); // Both words before interpreting/writing.
         if (calling) {
             if (next>65535) {
-                if (protected_) throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
-                throw Fault{Cause::Memory,{}};
+                throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
             }
             stage_store(a,uint32_t(next)|(uint32_t(old.cs)<<16),4);
             s.sp=uint16_t(offset);
@@ -366,25 +316,15 @@ void VirtualCPU::execute() {
             else { auto value=read_word(a); s.sp=old.sp+2; if (x==0x11) jump(value); else s.r[x-8]=value; }
             if (x==0x10) {
                 if (next>65535) {
-                    if (protected_) throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
-                    throw Fault{Cause::Memory,{}};
+                    throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),old.cs,next,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
                 }
                 jump(operand);
             }
         } else if (x==0x12) {
             if (!context_) invalid();
-            if (protected_) {
-                const auto& f=protected_->frames.back();
-                s=validate_return(f,(f.origin==Mode::User || f.bootstrap)?Mode::User:Mode::Kernel);
-                target=s.pc; target_segment=s.cs; returning=true;
-            } else {
-            const auto& a=*context_;
-            if (a[9]>255 || a[14]>255 || a[16]>255 || (a[10]&~0x2f)) invalid();
-            if (!(a[12]<=a[11] && a[11]<=a[13])) throw Fault{Cause::Stack,address(a[14],a[11])};
-            std::copy_n(a.begin(),8,s.r.begin());
-            s.pc=a[8]; s.cs=a[9]; s.flags=a[10]; s.sp=a[11]; s.sb=a[12]; s.st=a[13];
-            s.ss=a[14]; s.dp=a[15]; s.ds=a[16]; target_segment=s.cs; jump(s.pc); returning=true;
-            }
+            const auto& f=protected_->frames.back();
+            s=validate_return(f,(f.origin==Mode::User || f.bootstrap)?Mode::User:Mode::Kernel);
+            target=s.pc; target_segment=s.cs; returning=true;
         } else if (x>=0x20 && x<=0x50) {
             if (!context_) invalid();
             if (x<0x40) s.r[b[2]]=(*context_)[x-0x20]; else edit=std::make_pair(x-0x40,old.r[b[2]]);
@@ -392,8 +332,7 @@ void VirtualCPU::execute() {
     } else throw std::logic_error("Encoding lacks execution semantics");
     // Target validation is last: operand/backing faults take precedence.
     if (target<0 || target>65535) {
-        if (protected_) throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),target_segment,target,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
-        throw Fault{Cause::Memory,{}};
+        throw memory_failure(mode()==Mode::Kernel?0:protected_->controls[0],mode(),target_segment,target,1,Access::Fetch,Phase::ResultPC,mode()==Mode::Kernel?2:1,1);
     }
     if (explicit_target) access(target_segment,target,1,Access::Fetch,Phase::ControlTarget);
     s.pc=uint16_t(target);
@@ -403,12 +342,10 @@ void VirtualCPU::execute() {
     if (action) action();
     regs_=s;
     if (returning) {
-        if (protected_) {
-            const auto& f=protected_->frames.back();
-            protected_->mode=f.origin==Mode::User || f.bootstrap?Mode::User:Mode::Kernel;
-            protected_->controls=f.controls; protected_->frames.pop_back();
-            context_=protected_->frames.empty()?std::optional<Context>{}:protected_->frames.back().words;
-        } else context_.reset();
+        const auto& f=protected_->frames.back();
+        protected_->mode=f.origin==Mode::User || f.bootstrap?Mode::User:Mode::Kernel;
+        protected_->controls=f.controls; protected_->frames.pop_back();
+        context_=protected_->frames.empty()?std::optional<Context>{}:protected_->frames.back().words;
     }
     if (halt) state_=ExecutionState::Halted;
 }

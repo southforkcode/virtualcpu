@@ -136,7 +136,6 @@ std::string sha256(const std::vector<uint8_t>& input) {
 }
 }
 HostError VirtualCPU::apply_boundary_events(const std::vector<BoundaryEvent>& records) {
-    if (!protected_) return HostError::BadProfile;
     if (records.empty()) return HostError::None;
     auto staged=*protected_; auto sequence=sequence_;
     bool terminal=state_==ExecutionState::TerminalDoubleFault || state_==ExecutionState::TerminalResetFault;
@@ -145,11 +144,18 @@ HostError VirtualCPU::apply_boundary_events(const std::vector<BoundaryEvent>& re
         using Kind=BoundaryEvent::Kind;
         if (!decimal(event.run) || !decimal(event.boundary) || !decimal(event.sequence) ||
             (event.kind==Kind::IdleAdvance && !decimal(event.target_time)) ||
-            (event.kind!=Kind::Edge && event.kind!=Kind::Level && event.kind!=Kind::IdleAdvance && event.kind!=Kind::Reset)) return HostError::BadFormat;
+            (event.kind==Kind::ConsoleInput && (event.data.empty() || event.data.size()>64)) ||
+            (event.kind!=Kind::ConsoleInput && event.kind!=Kind::Edge && event.kind!=Kind::Level && event.kind!=Kind::IdleAdvance && event.kind!=Kind::Reset)) return HostError::BadFormat;
         if (event.run!=run_ || event.boundary!=boundary_) return HostError::WrongBoundary;
         if (event.sequence!=sequence) return HostError::BadSequence;
-        if ((event.kind==Kind::Edge && event.source!=1) || (event.kind==Kind::Level && event.source!=2)) return HostError::BadSource;
+        if ((event.kind==Kind::Edge && event.source!=1) || (event.kind==Kind::Level && (event.source!=2 || profile_==MachineProfile::ConsoleV1))) return HostError::BadSource;
+        if (event.kind==Kind::ConsoleInput && profile_!=MachineProfile::ConsoleV1) return HostError::BadProfile;
         if ((terminal && event.kind!=Kind::Reset) || (event.kind==Kind::Reset && records.size()!=1)) return HostError::BadState;
+        if (event.kind==Kind::ConsoleInput) {
+            if (staged.console_rx.size()+event.data.size()>64) return HostError::BadState;
+            staged.console_rx.insert(staged.console_rx.end(),event.data.begin(),event.data.end());
+            staged.levels|=4; staged.pending|=4;
+        }
         if (event.kind==Kind::Edge) staged.pending|=2;
         if (event.kind==Kind::Level) { staged.levels=event.asserted?4:0; if (event.asserted) staged.pending|=4; }
         if (event.kind==Kind::IdleAdvance) {
@@ -165,7 +171,7 @@ HostError VirtualCPU::apply_boundary_events(const std::vector<BoundaryEvent>& re
     return HostError::None;
 }
 HostError VirtualCPU::advance_idle_to(uint64_t target) {
-    BoundaryEvent event{run_,boundary_,sequence_,BoundaryEvent::Kind::IdleAdvance}; event.target_time=std::to_string(target);
+    BoundaryEvent event{run_,boundary_,sequence_,BoundaryEvent::Kind::IdleAdvance,0,false,"0",{}}; event.target_time=std::to_string(target);
     return apply_boundary_events({event});
 }
 HostError VirtualCPU::apply_boundary_json(const std::string& lines) {
@@ -185,11 +191,26 @@ HostError VirtualCPU::apply_boundary_json(const std::string& lines) {
                 event.kind=kind=="irq_edge"?BoundaryEvent::Kind::Edge:BoundaryEvent::Kind::Level;
             } else if (kind=="idle_advance") {
                 keys(o,{"run","boundary","sequence","kind","target_time"}); event.target_time=field(o,"target_time"); event.kind=BoundaryEvent::Kind::IdleAdvance;
+            } else if (kind=="console_rx" && profile_==MachineProfile::ConsoleV1) {
+                keys(o,{"run","boundary","sequence","kind","data"});
+                auto data=field(o,"data");
+                if (data.empty() || data.size()>128 || data.size()%2) throw BadJSON{};
+                auto nibble=[](char c)->unsigned { if (c>='0' && c<='9') return c-'0'; if (c>='a' && c<='f') return c-'a'+10; throw BadJSON{}; };
+                for (size_t i=0;i<data.size();i+=2) event.data.push_back(uint8_t(16*nibble(data[i])+nibble(data[i+1])));
+                event.kind=BoundaryEvent::Kind::ConsoleInput;
             } else if (kind=="reset") { keys(o,{"run","boundary","sequence","kind"}); event.kind=BoundaryEvent::Kind::Reset; }
         } catch (const BadJSON&) { event.kind=BoundaryEvent::Kind::Invalid; }
         records.push_back(event);
     }
     return apply_boundary_events(records);
+}
+std::string VirtualCPU::replay_header() const {
+    if (boundary_!="0") throw std::logic_error("Replay header requires Working reset boundary");
+    std::vector<uint8_t> ram(1u<<24), tags(1u<<24);
+    for (uint32_t a=0;a<0x1000000;++a) { tags[a]=uint8_t(backing(a)); if (tags[a]==1) ram[a]=ram_[a]; }
+    return "{\"format\":\"vcpu-replay\",\"version\":"+std::string(profile_==MachineProfile::ConsoleV1?"2":"1")+
+        ",\"profile\":\""+(profile_==MachineProfile::ConsoleV1?"console-v1":"minimal-v1")+"\",\"run\":\""+run_+
+        "\",\"ram_image_sha256\":\""+sha256(ram)+"\",\"backing_map_sha256\":\""+sha256(tags)+"\"}";
 }
 HostError VirtualCPU::verify_replay_header(const std::string& json,const std::vector<uint8_t>& ram_image,const std::vector<uint8_t>& backing_map) const {
     try {
@@ -198,7 +219,7 @@ HostError VirtualCPU::verify_replay_header(const std::string& json,const std::ve
         auto ram_hash=field(o,"ram_image_sha256"), backing_hash=field(o,"backing_map_sha256");
         auto digest=[](const std::string& s){return s.size()==64 && std::all_of(s.begin(),s.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');});};
         if (field(o,"format")!="vcpu-replay" || !decimal(run) || !decimal(version) || !digest(ram_hash) || !digest(backing_hash)) return HostError::BadFormat;
-        if (!protected_ || version!="1" || profile!="minimal-v1" || ram_image.size()!=0x1000000 || backing_map.size()!=0x1000000) return HostError::BadProfile;
+        if (version!=(profile_==MachineProfile::ConsoleV1?"2":"1") || profile!=(profile_==MachineProfile::ConsoleV1?"console-v1":"minimal-v1") || ram_image.size()!=0x1000000 || backing_map.size()!=0x1000000) return HostError::BadProfile;
         for (uint32_t a=0;a<0x1000000;++a) if (backing_map[a]!=backing(a) || ram_image[a]!=(backing(a)==1?ram_[a]:0)) return HostError::BadProfile;
         if (sha256(ram_image)!=ram_hash || sha256(backing_map)!=backing_hash) return HostError::BadProfile;
         if (run!=run_ || boundary_!="0") return HostError::WrongBoundary;
